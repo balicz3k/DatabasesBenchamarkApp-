@@ -3,7 +3,7 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15
-    container_name: szpital_postgres
+    container_name: hospital_db_postgres
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
@@ -13,7 +13,7 @@ services:
 
   mysql:
     image: mysql:8.0
-    container_name: szpital_mysql
+    container_name: hospital_db_mysql
     environment:
       MYSQL_ROOT_PASSWORD: password
       MYSQL_DATABASE: hospital_db
@@ -22,7 +22,7 @@ services:
 
   mongodb:
     image: mongo:6.0
-    container_name: szpital_mongo
+    container_name: hospital_db_mongo
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: password
@@ -31,6 +31,6 @@ services:
 
   redis:
     image: redis:7.0
-    container_name: szpital_redis
+    container_name: hospital_db_redis
     ports:
       - "6379:6379"
