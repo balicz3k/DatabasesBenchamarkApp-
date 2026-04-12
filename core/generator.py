@@ -1,84 +1,137 @@
 """
 core/generator.py – Generowanie syntetycznych danych medycznych (system szpitalny).
-Obsługiwane skale: 10 000 / 100 000 / 500 000 / 1 000 000 wizyt.
+Obsługiwane skale: 10 000 / 100 000 / 1 000 000 wizyt (rekordów w tabeli visits).
+
+Dane generowane bez zewnętrznych zależności.
+Używa polskich list imion i nazwisk oraz wbudowanego modułu random.
 """
 
 import random
+import string
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable, Optional
 
-from faker import Faker
+# ── Polskie imiona i nazwiska ───────────────────────────────────────────────
 
-fake = Faker("pl_PL")
+MALE_NAMES = [
+    "Adam", "Bartosz", "Cezary", "Damian", "Emil", "Filip", "Grzegorz",
+    "Hubert", "Igor", "Jan", "Kamil", "Leszek", "Marek", "Norbert",
+    "Oskar", "Piotr", "Rafał", "Sławomir", "Tomasz", "Urszul",
+    "Waldemar", "Zbigniew", "Artur", "Bogdan", "Dariusz", "Edward",
+    "Franciszek", "Henryk", "Jakub", "Karol", "Łukasz", "Michał",
+    "Paweł", "Robert", "Sebastian", "Tadeusz", "Wiktor", "Andrzej",
+    "Benedykt", "Czesław", "Dominik", "Ernest", "Gustaw", "Ireneusz",
+    "Józef", "Kazimierz", "Mateusz", "Nikodem", "Olaf", "Przemysław",
+]
+
+FEMALE_NAMES = [
+    "Anna", "Barbara", "Celina", "Dorota", "Elżbieta", "Felicja", "Grażyna",
+    "Halina", "Irena", "Jolanta", "Katarzyna", "Lidia", "Małgorzata",
+    "Natalia", "Oliwia", "Paulina", "Regina", "Sylwia", "Teresa",
+    "Urszula", "Wanda", "Zofia", "Agnieszka", "Beata", "Danuta",
+    "Edyta", "Gabriela", "Helena", "Izabela", "Joanna", "Kamila",
+    "Lucyna", "Monika", "Nadia", "Patrycja", "Renata", "Stanisława",
+    "Wiktoria", "Aleksandra", "Bożena", "Ewa", "Genowefa", "Honorata",
+    "Julia", "Klaudia", "Maria", "Nikola", "Patrycja", "Roksana",
+    "Tamara",
+]
+
+LAST_NAMES_MALE = [
+    "Kowalski", "Nowak", "Wiśniewski", "Dąbrowski", "Lewandowski",
+    "Wójcik", "Kamiński", "Kowalczyk", "Zieliński", "Szymański",
+    "Woźniak", "Kozłowski", "Jankowski", "Wojciechowski", "Kwiatkowski",
+    "Kaczmarek", "Mazur", "Krawczyk", "Piotrowski", "Grabowski",
+    "Nowakowski", "Pawłowski", "Michalski", "Nowicki", "Adamczyk",
+    "Dudek", "Zając", "Wieczorek", "Jabłoński", "Król",
+    "Majewski", "Olszewski", "Jaworski", "Wróbel", "Malinowski",
+    "Pawlak", "Witkowski", "Walczak", "Stępień", "Górski",
+    "Rutkowski", "Michalak", "Sikora", "Ostrowski", "Baran",
+    "Duda", "Szewczyk", "Tomaszewski", "Pietrzak", "Marciniak",
+]
+
+LAST_NAMES_FEMALE = [
+    name + "a" if not name.endswith("a") else name
+    for name in LAST_NAMES_MALE
+]
+
+DEPT_TYPES = [
+    "Kardiologii", "Neurologii", "Ortopedii", "Dermatologii",
+    "Pediatrii", "Onkologii", "Okulistyki", "Chirurgii",
+    "Psychiatrii", "Urologii", "Ginekologii", "Endokrynologii",
+    "Gastroenterologii", "Pulmonologii", "Reumatologii",
+    "Nefrologii", "Hematologii", "Radiologii", "Anestezjologii",
+    "Laryngologii", "Geriatrii", "Alergologii", "Diabetologii",
+    "Immunologii", "Rehabilitacji", "Neonatologii", "Toksykologii",
+    "Medycyny ratunkowej", "Medycyny pracy", "Transplantologii",
+    "Chirurgii plastycznej", "Genetyki", "Neurochirurgii",
+    "Chorób zakaźnych", "Intensywnej terapii", "Medycyny paliatywnej",
+    "Foniatrii", "Seksuologii", "Perinatologii", "Andrologii",
+    "Medycyny sądowej", "Epidemiologii", "Medycyny rodzinnej",
+    "Chirurgii naczyniowej", "Patomorfologii", "Farmakologii",
+    "Balneologii", "Medycyny lotniczej", "Medycyny morskiej", "Medycyny sportowej",
+]
+
+DISEASE_WORDS = [
+    "Nadciśnienie tętnicze", "Cukrzyca typu 2", "Choroba wieńcowa",
+    "Migotanie przedsionków", "Niewydolność serca", "Astma oskrzelowa",
+    "POChP", "Zapalenie płuc", "Choroba refluksowa", "Wrzód trawienny",
+    "Kamica żółciowa", "Zapalenie wyrostka", "Niedokrwistość",
+    "Niedoczynność tarczycy", "Nadczynność tarczycy", "Osteoporoza",
+    "Artretyzm", "Reumatoidalne zapalenie stawów", "Dna moczanowa",
+    "Kamienie nerkowe", "Przewlekła choroba nerek", "Udar mózgu",
+    "Epilepsja", "Parkinson", "Alzheimer", "Demencja",
+    "Depresja", "Zaburzenia lękowe", "Schizofrenia", "Bezsenność",
+    "Zapalenie spojówek", "Jaskra", "Zaćma", "Zwyrodnienie plamki",
+    "Zapalenie ucha", "Zapalenie zatok", "Migrenowe bóle głowy",
+    "Przepuklina krążka", "Stenoza kręgosłupa", "Złamanie osteoporotyczne",
+    "Łuszczyca", "Egzema", "Trądzik", "Pokrzywka", "Czerniak",
+    "Rak płuca", "Rak jelita grubego", "Rak prostaty", "Rak piersi",
+    "Białaczka", "Chłoniak", "Szpiczak", "Anemia aplastyczna",
+    "Zapalenie wątroby B", "Zapalenie wątroby C", "Marskość wątroby",
+    "Trzustka zaporowa", "Nieswoiste zapalenie jelit", "Celiakia",
+    "Alergia pokarmowa", "Atopowe zapalenie skóry", "Toczeń",
+    "Twardzina układowa", "Zapalenie naczyń", "Amyloidoza",
+    "Porfirie", "Hemofilia", "Trombofilia", "Małopłytkowość",
+    "Cystic fibrosis", "Dystrofia mięśniowa", "Stwardnienie zanikowe",
+    "Stwardnienie rozsiane", "Padaczka skroniowa", "Neuropatia cukrzycowa",
+    "Retinopatia cukrzycowa", "Nefropatia cukrzycowa", "Stopa cukrzycowa",
+    "Chromanie przestankowe", "Tętniak aorty", "Zakrzepica żylna",
+    "Zatorowość płucna", "Nadciśnienie płucne", "Kardiomiopatia",
+]
+
+DIAG_NOTES = [
+    "Pacjent wymaga dalszej obserwacji.", "Zalecono kontrolę za 3 miesiące.",
+    "Przepisano leczenie farmakologiczne.", "Skierowano na badania dodatkowe.",
+    "Stan pacjenta stabilny.", "Wymaga hospitalizacji.",
+    "Zalecono zmianę trybu życia.", "Skierowano do specjalisty.",
+    "Brak powikłań.", "Rokowanie dobre przy odpowiednim leczeniu.",
+    "Pacjent nie wyraził zgody na zabieg.", "Wskazana dieta niskosodowa.",
+    "Monitorowanie ciśnienia tętniczego.", "Zalecono rehabilitację.",
+    "Wyniki badań w granicach normy.", "Konieczna kontrola glikemii.",
+    "Przepisano insulinę.", "Zwiększono dawkę leków.",
+    "Zmniejszono dawkę leków.", "Odstawiono dotychczasowe leczenie.",
+    "", "", "",  # puste notatki są realistyczne
+]
+
+ACTIVE_SUBSTANCES = [
+    "Metoprolol", "Amlodipina", "Lisinopril", "Atorwastatyna",
+    "Metformina", "Bisoprolol", "Omeprazol", "Pantoprazol",
+    "Escitalopram", "Sertralin", "Amoksycylina", "Azytromycyna",
+    "Ibuprofen", "Paracetamol", "Tramadol", "Diazepam",
+    "Furosemid", "Spironolakton", "Warfaryna", "Rywaroksaban",
+    "Clopidogrel", "Aspiryna", "Digoksyna", "Levotyroksyna",
+    "Prednizon", "Deksametazon", "Insulin glargine", "Insulin lispro",
+    "Gabapentyna", "Pregabalina", "Karbamazepina", "Lewetyracetam",
+    "Haloperidol", "Klozapina", "Rysperydon", "Olanzapina",
+    "Allopurinol", "Kolchicyna", "Metotreksat", "Sulfasalazyna",
+    "Hydrochlorotiazyd", "Ramipryl", "Walsartan", "Karwedilol",
+    "Tamsulosina", "Sildenafil", "Finasteryd", "Anastrozol",
+    "Tamoksyfen", "Docetaksel",
+]
 
 
-@dataclass
-class GeneratedData:
-    """Kontener na wszystkie wygenerowane dane (SQL + NoSQL)."""
-
-    departments: list = field(default_factory=list)
-    specializations: list = field(default_factory=list)
-    diseases: list = field(default_factory=list)
-    medical_services: list = field(default_factory=list)
-    medications: list = field(default_factory=list)
-    patients: list = field(default_factory=list)
-    doctors: list = field(default_factory=list)
-    visits: list = field(default_factory=list)
-    performed_services: list = field(default_factory=list)
-    diagnoses: list = field(default_factory=list)
-    prescriptions: list = field(default_factory=list)
-    prescription_items: list = field(default_factory=list)
-    test_results: list = field(default_factory=list)
-
-    mongo_patients: list = field(default_factory=list)
-
-    redis_visit_statuses: list = field(default_factory=list)
-    redis_doctor_sessions: list = field(default_factory=list)
-
-
-SCALE_MAP = {
-    10_000: {
-        "departments": 10,
-        "specializations": 15,
-        "diseases": 100,
-        "medical_services": 50,
-        "medications": 80,
-        "patients": 2_000,
-        "doctors": 50,
-        "visits": 10_000,
-    },
-    100_000: {
-        "departments": 20,
-        "specializations": 25,
-        "diseases": 400,
-        "medical_services": 150,
-        "medications": 300,
-        "patients": 15_000,
-        "doctors": 150,
-        "visits": 100_000,
-    },
-    500_000: {
-        "departments": 30,
-        "specializations": 40,
-        "diseases": 800,
-        "medical_services": 300,
-        "medications": 600,
-        "patients": 50_000,
-        "doctors": 400,
-        "visits": 500_000,
-    },
-    1_000_000: {
-        "departments": 50,
-        "specializations": 60,
-        "diseases": 1_500,
-        "medical_services": 500,
-        "medications": 1_000,
-        "patients": 100_000,
-        "doctors": 800,
-        "visits": 1_000_000,
-    },
-}
+# ── Stałe domenowe ──────────────────────────────────────────────────────────
 
 VISIT_STATUSES = ["scheduled", "completed", "cancelled", "in_progress"]
 DIAGNOSIS_TYPES = ["primary", "secondary", "additional"]
@@ -112,7 +165,98 @@ SPECIALIZATION_NAMES = [
 ]
 
 
+# ── SCALE_MAP ────────────────────────────────────────────────────────────────
+
+SCALE_MAP = {
+    10_000: {
+        "departments": 10,
+        "specializations": 15,
+        "diseases": 100,
+        "medical_services": 50,
+        "medications": 80,
+        "patients": 2_000,
+        "doctors": 50,
+        "visits": 10_000,
+    },
+    100_000: {
+        "departments": 20,
+        "specializations": 25,
+        "diseases": 200,
+        "medical_services": 100,
+        "medications": 150,
+        "patients": 10_000,
+        "doctors": 100,
+        "visits": 100_000,
+    },
+    1_000_000: {
+        "departments": 30,
+        "specializations": 40,
+        "diseases": 500,
+        "medical_services": 200,
+        "medications": 400,
+        "patients": 80_000,
+        "doctors": 500,
+        "visits": 1_000_000,
+    },
+}
+
+
 ProgressCallback = Optional[Callable[[str], None]]
+
+
+# ── Pomocnicze funkcje generujące ───────────────────────────────────────────
+
+def _rand_pesel() -> str:
+    """Losowy 11-cyfrowy numer PESEL-like."""
+    return "".join(str(random.randint(0, 9)) for _ in range(11))
+
+
+def _rand_phone() -> str:
+    """Losowy numer telefonu w formacie polskim."""
+    return f"+48 {random.randint(100, 999)} {random.randint(100, 999)} {random.randint(100, 999)}"
+
+
+def _rand_license() -> str:
+    """Losowy numer licencji lekarza."""
+    return "".join(str(random.randint(0, 9)) for _ in range(7))
+
+
+def _rand_date(start_year: int = 1930, end_year: int = 2008) -> date:
+    """Losowa data urodzenia."""
+    start = date(start_year, 1, 1)
+    end = date(end_year, 12, 31)
+    return start + timedelta(days=random.randint(0, (end - start).days))
+
+
+def _rand_rx_code() -> str:
+    """Losowy kod recepty."""
+    digits = "".join(str(random.randint(0, 9)) for _ in range(4))
+    letters = "".join(random.choice(string.ascii_uppercase) for _ in range(4))
+    return f"RX-{digits}-{letters}"
+
+
+@dataclass
+class GeneratedData:
+    """Kontener na wszystkie wygenerowane dane (SQL + NoSQL)."""
+
+    departments: list = field(default_factory=list)
+    specializations: list = field(default_factory=list)
+    diseases: list = field(default_factory=list)
+    medical_services: list = field(default_factory=list)
+    medications: list = field(default_factory=list)
+    patients: list = field(default_factory=list)
+    doctors: list = field(default_factory=list)
+    visits: list = field(default_factory=list)
+    performed_services: list = field(default_factory=list)
+    diagnoses: list = field(default_factory=list)
+    prescriptions: list = field(default_factory=list)
+    prescription_items: list = field(default_factory=list)
+    test_results: list = field(default_factory=list)
+
+    mongo_patients: list = field(default_factory=list)
+
+    redis_visit_statuses: list = field(default_factory=list)
+    redis_doctor_sessions: list = field(default_factory=list)
 
 
 class DataGenerator:
@@ -180,12 +324,15 @@ class DataGenerator:
         _report("Zakończono generowanie danych.")
         return data
 
-    # ── Generatory tabel SQL ─────────────────────────────────────────
+    # ── Generatory tabel SQL ─────────────────────────────────────────────────
 
     @staticmethod
     def _gen_departments(n: int) -> list[tuple]:
+        dept_list = DEPT_TYPES[:n]
+        while len(dept_list) < n:
+            dept_list.append(f"Oddzial_{len(dept_list) + 1}")
         return [
-            (i + 1, fake.unique.company()[:60], fake.phone_number()[:20])
+            (i + 1, f"Oddzial {dept_list[i]}", _rand_phone())
             for i in range(n)
         ]
 
@@ -198,26 +345,28 @@ class DataGenerator:
 
     @staticmethod
     def _gen_diseases(n: int) -> list[tuple]:
-        return [
-            (
-                i + 1,
-                f"{chr(65 + i % 26)}{(i // 26):02d}.{i % 10}",
-                fake.sentence(nb_words=3)[:80],
-            )
-            for i in range(n)
-        ]
+        rows = []
+        disease_pool = DISEASE_WORDS * ((n // len(DISEASE_WORDS)) + 1)
+        for i in range(n):
+            icd = f"{chr(65 + i % 26)}{(i // 26):02d}.{i % 10}"
+            name = disease_pool[i] if i < len(disease_pool) else f"Choroba_{i+1}"
+            if i >= len(DISEASE_WORDS):
+                name = f"{name} (wariant {i // len(DISEASE_WORDS)})"
+            rows.append((i + 1, icd, name[:80]))
+        return rows
 
     @staticmethod
     def _gen_medical_services(n: int) -> list[tuple]:
         return [
-            (i + 1, f"Usługa medyczna {i + 1}", round(random.uniform(50, 2000), 2))
+            (i + 1, f"Usluga medyczna {i + 1}", round(random.uniform(50, 2000), 2))
             for i in range(n)
         ]
 
     @staticmethod
     def _gen_medications(n: int) -> list[tuple]:
+        substance_pool = ACTIVE_SUBSTANCES * ((n // len(ACTIVE_SUBSTANCES)) + 1)
         return [
-            (i + 1, f"Lek_{i + 1}", fake.word().capitalize())
+            (i + 1, f"Lek_{i + 1}", substance_pool[i % len(substance_pool)])
             for i in range(n)
         ]
 
@@ -226,13 +375,18 @@ class DataGenerator:
         rows = []
         for i in range(n):
             gender = random.choice(GENDERS)
-            first = fake.first_name_male() if gender == "M" else fake.first_name_female()
+            if gender == "M":
+                first = random.choice(MALE_NAMES)
+                last = random.choice(LAST_NAMES_MALE)
+            else:
+                first = random.choice(FEMALE_NAMES)
+                last = random.choice(LAST_NAMES_FEMALE)
             rows.append((
                 i + 1,
-                fake.numerify("###########"),
+                _rand_pesel(),
                 first,
-                fake.last_name(),
-                fake.date_of_birth(minimum_age=1, maximum_age=95),
+                last,
+                _rand_date(1930, 2008),
                 gender,
             ))
         return rows
@@ -241,13 +395,16 @@ class DataGenerator:
     def _gen_doctors(n: int, n_deps: int, n_specs: int) -> list[tuple]:
         rows = []
         for i in range(n):
+            gender = random.choice(GENDERS)
+            first = random.choice(MALE_NAMES if gender == "M" else FEMALE_NAMES)
+            last = random.choice(LAST_NAMES_MALE if gender == "M" else LAST_NAMES_FEMALE)
             rows.append((
                 i + 1,
                 random.randint(1, n_deps),
                 random.randint(1, n_specs),
-                fake.first_name(),
-                fake.last_name(),
-                fake.numerify("#######"),
+                first,
+                last,
+                _rand_license(),
             ))
         return rows
 
@@ -292,7 +449,7 @@ class DataGenerator:
                     v[0],
                     random.randint(1, n_diseases),
                     random.choice(DIAGNOSIS_TYPES),
-                    fake.sentence(nb_words=5) if random.random() > 0.3 else "",
+                    random.choice(DIAG_NOTES) if random.random() > 0.3 else "",
                 ))
                 did += 1
         return rows
@@ -307,14 +464,12 @@ class DataGenerator:
         iid = 1
         for v in visits:
             if random.random() < 0.4:
-                code = fake.bothify("RX-####-????").upper()
+                code = _rand_rx_code()
                 issue_date = v[3]
                 prescriptions.append((pid, v[0], code, issue_date))
                 for _ in range(random.randint(1, 3)):
                     dosage = f"{random.choice([1, 2, 3])}x{random.choice([100, 200, 500])}mg"
-                    items.append((
-                        iid, pid, random.randint(1, n_medications), dosage
-                    ))
+                    items.append((iid, pid, random.randint(1, n_medications), dosage))
                     iid += 1
                 pid += 1
         return prescriptions, items
@@ -335,7 +490,7 @@ class DataGenerator:
                     tid += 1
         return rows
 
-    # ── Budowa dokumentów MongoDB ────────────────────────────────────
+    # ── Budowa dokumentów MongoDB ────────────────────────────────────────────
 
     @staticmethod
     def _build_mongo_documents(data: GeneratedData) -> list[dict]:
@@ -385,11 +540,7 @@ class DataGenerator:
                     ),
                     "status": v[4],
                     "performed_services": [
-                        {
-                            "service_id": s[2],
-                            "quantity": s[3],
-                            "final_price": s[4],
-                        }
+                        {"service_id": s[2], "quantity": s[3], "final_price": s[4]}
                         for s in services_by_visit.get(v[0], [])
                     ],
                     "diagnoses": [
@@ -416,9 +567,7 @@ class DataGenerator:
                     rx_doc = {
                         "prescription_code": rx[2],
                         "issue_date": (
-                            rx[3].isoformat()
-                            if isinstance(rx[3], date)
-                            else str(rx[3])
+                            rx[3].isoformat() if isinstance(rx[3], date) else str(rx[3])
                         ),
                         "items": [
                             {"medication_id": it[2], "dosage": it[3]}
@@ -430,7 +579,7 @@ class DataGenerator:
             documents.append(doc)
         return documents
 
-    # ── Budowa danych Redis ──────────────────────────────────────────
+    # ── Budowa danych Redis ──────────────────────────────────────────────────
 
     @staticmethod
     def _build_redis_data(

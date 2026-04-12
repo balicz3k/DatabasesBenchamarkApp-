@@ -79,9 +79,9 @@ Celem projektu jest porównanie wydajności czterech systemów zarządzania baza
 
 Zakres pracy obejmuje:
 \begin{enumerate}[noitemsep]
-    \item Zaprojektowanie schematu danych systemu szpitalnego (13 tabel relacyjnych, model dokumentowy MongoDB, struktury Redis).
-    \item Implementację aplikacji testowej automatyzującej generowanie danych, wstawianie, benchmarki i analizę.
-    \item Przeprowadzenie 24 scenariuszy testowych CRUD (6 na każdą operację) w trzech skalach: 10\,000, 100\,000, 500\,000 rekordów.
+    \item Zaprojektowanie schematu danych systemu szpitalnego (13 tabel relacyjnych, model dokumentowy MongoDB, struktury klucz-wartość Redis).
+    \item Implementację aplikacji testowej automatyzującej generowanie danych, wstawianie, benchmarki i~analizę.
+    \item Przeprowadzenie 24 scenariuszy testowych CRUD (6 na każdą operację) w~trzech skalach: 10\,000, 100\,000, 1\,000\,000 rekordów.
     \item Porównanie wydajności przed i po zastosowaniu indeksów.
     \item Analizę planów zapytań (EXPLAIN).
     \item Weryfikację hipotezy badawczej o wpływie indeksów na wydajność.
@@ -188,7 +188,7 @@ Redis Cluster (do 1000 węzłów), sharding automatyczny \\
 \section{Opis zbioru danych}
 % ══════════════════════════════════════════════════════════════════════
 
-Dane testowe modelują system informatyczny szpitala. Schemat relacyjny składa się z \textbf{13 tabel}:
+Dane testowe modelują system informatyczny szpitala. Schemat relacyjny składa się z~\textbf{13 tabel}:
 
 \begin{table}[H]
 \centering
@@ -205,13 +205,13 @@ diseases & Słownikowa & Choroby z kodem ICD-10 (id, icd10\_code, name) \\
 medical\_services & Słownikowa & Usługi medyczne z ceną bazową \\
 medications & Słownikowa & Leki (id, name, active\_substance) \\
 patients & Główna & Pacjenci (id, PESEL, imię, nazwisko, data ur., płeć) \\
-doctors & Główna & Lekarze → departments, specializations \\
-visits & Transakcyjna & Wizyty → patients, doctors \\
-performed\_services & Transakcyjna & Wykonane usługi → visits, medical\_services \\
-diagnoses & Transakcyjna & Diagnozy → visits, diseases \\
-prescriptions & Transakcyjna & Recepty → visits \\
-prescription\_items & Transakcyjna & Pozycje recept → prescriptions, medications \\
-test\_results & Transakcyjna & Wyniki badań → visits \\
+doctors & Główna & Lekarze $\rightarrow$ departments, specializations \\
+visits & Transakcyjna & Wizyty $\rightarrow$ patients, doctors \\
+performed\_services & Transakcyjna & Wykonane usługi $\rightarrow$ visits, medical\_services \\
+diagnoses & Transakcyjna & Diagnozy $\rightarrow$ visits, diseases \\
+prescriptions & Transakcyjna & Recepty $\rightarrow$ visits \\
+prescription\_items & Transakcyjna & Pozycje recept $\rightarrow$ prescriptions, medications \\
+test\_results & Transakcyjna & Wyniki badań $\rightarrow$ visits \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -219,38 +219,43 @@ test\_results & Transakcyjna & Wyniki badań → visits \\
 \subsection{Modele danych w systemach nierelacyjnych}
 
 \textbf{MongoDB} -- model dokumentowy z zagnieżdżeniami:
-Pacjent jest dokumentem głównym, zawierającym tablicę wizyt, a każda wizyta posiada zagnieżdżone tablice: wykonane usługi, diagnozy, recepty (z pozycjami) oraz wyniki badań. Taki model eliminuje konieczność JOINów.
+Pacjent jest dokumentem głównym, zawierającym tablicę wizyt, a~każda wizyta posiada zagnieżdżone tablice: wykonane usługi, diagnozy, recepty (z~pozycjami) oraz wyniki badań. Taki model eliminuje konieczność JOINów, ale komplikuje operacje UPDATE na zagnieżdżonych strukturach.
 
-\textbf{Redis} -- model klucz-wartość:
-Statusy wizyt przechowywane jako stringi (\texttt{visit:status:<id>}), sesje lekarzy jako hashe (\texttt{session:doctor:<id>}). Redis wykorzystywany jako warstwa cache i szybkiego dostępu.
+\textbf{Redis} -- model klucz-wartość z wieloma typami struktur:
+\begin{itemize}[noitemsep]
+    \item \texttt{patient:\{id\}} -- HASH z danymi pacjenta,
+    \item \texttt{patient:visits:\{pid\}} -- SET identyfikatorów wizyt,
+    \item \texttt{visit:status:\{id\}}, \texttt{visit:doctor:\{vid\}} -- STRING,
+    \item \texttt{session:doctor:\{id\}} -- HASH z danymi lekarza,
+    \item \texttt{visit:diag:\{vid\}} -- LIST diagnoz,
+    \item \texttt{prescription:\{id\}}, \texttt{service:total:\{vid\}}, \texttt{department:\{id\}} -- HASH.
+\end{itemize}
 
 
 \subsection{Skale danych testowych}
 
 \begin{table}[H]
 \centering
-\caption{Liczba rekordów w zależności od skali}
+\caption{Liczba rekordów w~zależności od skali}
 \label{tab:scales}
 \small
 \begin{tabular}{@{}lrrr@{}}
 \toprule
-\textbf{Tabela} & \textbf{10\,000} & \textbf{100\,000} & \textbf{500\,000} \\
+\textbf{Tabela} & \textbf{10\,000} & \textbf{100\,000} & \textbf{1\,000\,000} \\
 \midrule
 departments & 10 & 20 & 30 \\
 specializations & 15 & 25 & 40 \\
-diseases & 100 & 400 & 800 \\
-medical\_services & 50 & 150 & 300 \\
-medications & 80 & 300 & 600 \\
-patients & 2\,000 & 15\,000 & 50\,000 \\
-doctors & 50 & 150 & 400 \\
-visits & 10\,000 & 100\,000 & 500\,000 \\
-performed\_services & $\sim$10\,000 & $\sim$100\,000 & $\sim$500\,000 \\
-diagnoses & $\sim$10\,000 & $\sim$100\,000 & $\sim$500\,000 \\
-prescriptions & $\sim$4\,000 & $\sim$40\,000 & $\sim$200\,000 \\
-prescription\_items & $\sim$8\,000 & $\sim$80\,000 & $\sim$400\,000 \\
-test\_results & $\sim$6\,000 & $\sim$60\,000 & $\sim$300\,000 \\
-\midrule
-\textbf{Łączna suma (SQL)} & $\sim$50\,000 & $\sim$500\,000 & $\sim$2\,500\,000 \\
+diseases & 100 & 200 & 500 \\
+medical\_services & 50 & 100 & 200 \\
+medications & 80 & 150 & 400 \\
+patients & 2\,000 & 10\,000 & 80\,000 \\
+doctors & 50 & 100 & 500 \\
+visits & 10\,000 & 100\,000 & 1\,000\,000 \\
+performed\_services & $\sim$10\,000 & $\sim$100\,000 & $\sim$1\,000\,000 \\
+diagnoses & $\sim$10\,000 & $\sim$100\,000 & $\sim$1\,000\,000 \\
+prescriptions & $\sim$4\,000 & $\sim$40\,000 & $\sim$400\,000 \\
+prescription\_items & $\sim$8\,000 & $\sim$80\,000 & $\sim$800\,000 \\
+test\_results & $\sim$6\,000 & $\sim$60\,000 & $\sim$600\,000 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -261,17 +266,15 @@ test\_results & $\sim$6\,000 & $\sim$60\,000 & $\sim$300\,000 \\
 % ══════════════════════════════════════════════════════════════════════
 
 \subsection{Wymagania}
-
 \begin{itemize}[noitemsep]
-    \item Automatyczne generowanie syntetycznych danych medycznych przy użyciu biblioteki Faker.
+    \item Automatyczne generowanie syntetycznych danych medycznych (własny generator).
     \item Masowe wstawianie danych (Bulk Insert) do 4 systemów bazodanowych.
-    \item Wykonanie 24 scenariuszy CRUD w trybie bez indeksów i z indeksami.
-    \item Pomiar czasu operacji (średnia z 3 prób) z~dokładnością do mikrosekundy.
-    \item Automatyczne generowanie raportów EXPLAIN i wykresów porównawczych.
+    \item Wykonanie 24 scenariuszy CRUD w~trybie bez indeksów i~z~indeksami.
+    \item Pomiar czasu operacji (średnia z~3 prób) z~dokładnością do mikrosekundy.
+    \item Automatyczne generowanie raportów EXPLAIN i~wykresów porównawczych.
 \end{itemize}
 
 \subsection{Wykorzystane technologie i narzędzia}
-
 \begin{itemize}[noitemsep]
     \item \textbf{Python 3.13} -- język implementacji aplikacji.
     \item \textbf{Docker + Docker Compose} -- konteneryzacja wszystkich 4 baz danych.
@@ -279,42 +282,16 @@ test\_results & $\sim$6\,000 & $\sim$60\,000 & $\sim$300\,000 \\
     \item \textbf{mysql-connector-python} -- sterownik MySQL.
     \item \textbf{pymongo} -- sterownik MongoDB.
     \item \textbf{redis-py} -- sterownik Redis.
-    \item \textbf{Faker} -- generowanie realistycznych danych syntetycznych.
     \item \textbf{pandas + matplotlib} -- analiza wyników i wizualizacja.
     \item \textbf{\LaTeX} -- skład sprawozdania.
 \end{itemize}
 
 \subsection{Struktura projektu i opis działania}
-
-\begin{lstlisting}[language=bash,caption={Struktura katalogów projektu}]
-ZTDB/
-  docker-compose.yml       # 4 kontenery: PostgreSQL, MySQL, MongoDB, Redis
-  run_all.py               # Glowny skrypt automatyzacji
-  core/
-    database.py            # ConnectionManager, wzorzec Abstract Factory
-    generator.py           # DataGenerator - generowanie danych Faker
-    seeder.py              # DatabaseSeeder - bulk insert, indeksy, schemat
-    benchmark.py           # BenchmarkEngine - 24 scenariusze CRUD
-  results/
-    results_all.csv        # Zbiorczy plik z wynikami
-    explain_report.txt     # Plany zapytan EXPLAIN
-    charts/                # Wykresy PNG
-  sprawozdanie/
-    sprawozdanie.tex       # Niniejsze sprawozdanie
-\end{lstlisting}
-
-Aplikacja działa w pełni automatycznie. Polecenie \texttt{python run\_all.py} kolejno:
+Aplikacja działa w~pełni automatycznie. Polecenie \texttt{python run\_all.py} kolejno:
 \begin{enumerate}[noitemsep]
-    \item Sprawdza połączenia z~4 bazami danych (ping).
-    \item Dla każdej skali (10k, 100k, 500k):
-    \begin{enumerate}[noitemsep]
-        \item Generuje dane w pamięci (Faker).
-        \item Wstawia dane do PostgreSQL, MySQL, MongoDB, Redis.
-        \item Usuwa indeksy, wykonuje benchmark (24 scenariusze $\times$ 3 próby).
-        \item Tworzy indeksy, wykonuje benchmark ponownie.
-        \item Generuje raporty EXPLAIN.
-    \end{enumerate}
-    \item Łączy wyniki CSV i generuje wykresy porównawcze.
+    \item Sprawdza połączenia z~bazami danych (ping).
+    \item Dla każdej skali (10k, 100k, 1M): generuje dane, wstawia do baz, uruchamia benchmark bez/z indeksami, generuje EXPLAIN.
+    \item Łączy wyniki CSV i~generuje wykresy porównawcze (per scenariusz).
 \end{enumerate}
 
 
@@ -322,23 +299,22 @@ Aplikacja działa w pełni automatycznie. Polecenie \texttt{python run\_all.py} 
 \section{Opis scenariuszy testowych}
 % ══════════════════════════════════════════════════════════════════════
 
-Zdefiniowano \textbf{24 scenariusze testowe} -- po 6 dla każdej operacji CRUD. Każdy scenariusz wykonywany jest 3 razy, a~raportowana jest średnia arytmetyczna czasu wykonania. Poniżej zestawienie wszystkich scenariuszy:
+Zdefiniowano \textbf{24 scenariusze testowe} -- po 6 dla każdej operacji CRUD. Każdy scenariusz wykonywany jest 3~razy, a~raportowana jest średnia arytmetyczna czasu wykonania. Scenariusze zaprojektowano tak, aby były logicznie porównywalne między technologiami.
 
 \begin{table}[H]
 \centering
 \caption{Scenariusze testowe -- operacje CREATE}
-\label{tab:scenarios_create}
 \small
-\begin{tabular}{@{}clp{7.5cm}@{}}
+\begin{tabular}{@{}clp{3.5cm}p{3cm}p{3.5cm}@{}}
 \toprule
-\textbf{Nr} & \textbf{Nazwa} & \textbf{Opis} \\
+\textbf{Nr} & \textbf{Nazwa} & \textbf{SQL (PG/MySQL)} & \textbf{MongoDB} & \textbf{Redis} \\
 \midrule
-C1 & insert\_patient & Wstawienie nowego pacjenta \\
-C2 & insert\_visit & Wstawienie nowej wizyty (z FK do pacjenta i lekarza) \\
-C3 & insert\_diagnosis & Wstawienie diagnozy (z FK do wizyty i choroby) \\
-C4 & insert\_prescription\_with\_items & Wstawienie recepty z pozycjami \\
-C5 & insert\_performed\_service & Wstawienie wykonanej usługi medycznej \\
-C6 & insert\_test\_result & Wstawienie wyniku badania laboratoryjnego \\
+C1 & insert\_patient & INSERT INTO patients & insert\_one & pipeline HSET+SADD \\
+C2 & insert\_visit & INSERT INTO visits (FK) & \$push wizyta & pipeline SET+SET+SADD \\
+C3 & insert\_diagnosis & INSERT INTO diagnoses & \$push diagnoza & RPUSH na liście \\
+C4 & insert\_prescription & INSERT recept + pozycji & \$push recepta & pipeline HSET \\
+C5 & insert\_service & INSERT services & \$push usługa & pipeline HSET+HINCRBYFLOAT \\
+C6 & insert\_test\_result & INSERT test\_results & \$push wynik & HSET mapping \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -346,28 +322,26 @@ C6 & insert\_test\_result & Wstawienie wyniku badania laboratoryjnego \\
 \begin{table}[H]
 \centering
 \caption{Scenariusze testowe -- operacje READ}
-\label{tab:scenarios_read}
 \small
-\begin{tabular}{@{}clp{7.5cm}@{}}
+\begin{tabular}{@{}clp{3cm}p{2.5cm}p{4cm}@{}}
 \toprule
-\textbf{Nr} & \textbf{Nazwa} & \textbf{Opis} \\
+\textbf{Nr} & \textbf{Nazwa} & \textbf{SQL (PG/MySQL)} & \textbf{MongoDB} & \textbf{Redis} \\
 \midrule
-R1 & select\_patient\_by\_id & Odczyt pacjenta po kluczu głównym \\
-R2 & select\_visits\_with\_doctor & JOIN wizyt z lekarzami po patient\_id \\
-R3 & select\_visit\_diagnoses & JOIN diagnoz z chorobami po visit\_id \\
-R4 & select\_patient\_full\_history & Wielokrotny JOIN: pacjent + wizyty + usługi \\
-R5 & select\_aggregated\_costs & Agregacja SUM kosztów usług (GROUP BY) \\
-R6 & select\_prescriptions\_with\_meds & Trójkrotny JOIN: recepty + pozycje + leki \\
+R1 & select\_patient\_by\_id & SELECT by PK & find\_one by \_id & HGETALL patient:\{id\} \\
+R2 & select\_visits\_with\_doctor & JOIN visits+doctors & find + projection & SMEMBERS + pipeline GET/HGETALL \\
+R3 & select\_visit\_diagnoses & JOIN diagnoses+diseases & aggregate \$unwind & LRANGE + pipeline EXISTS \\
+R4 & select\_full\_history & Multi-JOIN (3 tabele) & find\_one + proj. & 2-fazowy pipeline (HGETALL+SMEMBERS $\rightarrow$ GET+LRANGE) \\
+R5 & select\_aggregated\_costs & SUM + GROUP BY & aggregate pipeline & SMEMBERS + batch HGETALL + SUM \\
+R6 & select\_prescriptions & Triple JOIN & find\_one + proj. & SMEMBERS + pipeline GET+HGETALL \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[H]
 \centering
-\caption{Scenariusze testowe -- operacje UPDATE}
-\label{tab:scenarios_update}
+\caption{Scenariusze testowe -- operacje UPDATE i DELETE}
 \small
-\begin{tabular}{@{}clp{7.5cm}@{}}
+\begin{tabular}{@{}clp{9cm}@{}}
 \toprule
 \textbf{Nr} & \textbf{Nazwa} & \textbf{Opis} \\
 \midrule
@@ -375,27 +349,15 @@ U1 & update\_patient\_name & Zmiana nazwiska pacjenta po id \\
 U2 & update\_visit\_status & Zmiana statusu wizyty po id \\
 U3 & update\_service\_price & Zmiana ceny usługi po visit\_id \\
 U4 & update\_diagnosis\_notes & Aktualizacja notatki diagnozy po visit\_id \\
-U5 & update\_doctor\_license & Zmiana numeru licencji lekarza po id \\
-U6 & update\_department\_phone & Zmiana telefonu oddziału po id \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[H]
-\centering
-\caption{Scenariusze testowe -- operacje DELETE}
-\label{tab:scenarios_delete}
-\small
-\begin{tabular}{@{}clp{7.5cm}@{}}
-\toprule
-\textbf{Nr} & \textbf{Nazwa} & \textbf{Opis} \\
+U5 & update\_doctor\_license & Zmiana numeru licencji lekarza \\
+U6 & update\_department\_phone & Zmiana telefonu oddziału \\
 \midrule
-D1 & delete\_test\_result & Usunięcie wyniku badania po id \\
-D2 & delete\_diagnosis & Usunięcie diagnozy po id \\
-D3 & delete\_patient & Usunięcie pacjenta po id \\
-D4 & delete\_performed\_service & Usunięcie usługi po id \\
-D5 & delete\_prescription & Usunięcie recepty po id \\
-D6 & delete\_visit\_cascade & Usunięcie wizyty (kaskadowe z FK) \\
+D1 & delete\_test\_result & Usunięcie wyniku badania \\
+D2 & delete\_diagnosis & Usunięcie diagnozy \\
+D3 & delete\_patient & Usunięcie pacjenta \\
+D4 & delete\_performed\_service & Usunięcie usługi \\
+D5 & delete\_prescription & Usunięcie recepty \\
+D6 & delete\_visit\_cascade & Usunięcie wizyty (kaskadowe) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -405,162 +367,321 @@ D6 & delete\_visit\_cascade & Usunięcie wizyty (kaskadowe z FK) \\
 \section{Wyniki testów wydajnościowych}
 % ══════════════════════════════════════════════════════════════════════
 
-\subsection{Wyniki bez indeksów}
+Poniższe tabele przedstawiają wyniki \textbf{poszczególnych scenariuszy osobno} dla każdej bazy danych. Każda wartość to średnia z~3 prób wyrażona w~milisekundach [ms].
+
+\subsection{Scenariusze CREATE -- porównanie per scenariusz}
 
 \begin{table}[H]
 \centering
-\caption{Średni czas operacji CRUD bez indeksów [ms] -- uśredniony po 6 scenariuszach}
-\label{tab:results_no_idx}
+\caption{Czas scenariuszy CREATE [ms] -- BEZ indeksów}
+\label{tab:create_no}
 \small
 \begin{tabular}{@{}llrrrr@{}}
 \toprule
-\textbf{Operacja} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
 \midrule
-\multirow{3}{*}{CREATE}
-& 10\,000   & 2.74 & 12.24 & 0.92 & 0.39 \\
-& 100\,000  & 6.85 & 9.19 & 0.89 & 0.43 \\
-& 500\,000  & 18.90 & 9.55 & 1.00 & 0.45 \\
+\multirow{3}{*}{insert\_patient}
+& 10k   & 2.81 & 9.15 & 1.88 & \textbf{0.98} \\
+& 100k  & 5.76 & 13.44 & 1.63 & \textbf{0.89} \\
+& 1M    & \textbf{38.43} & 7.52 & 1.65 & \textbf{1.22} \\
 \midrule
-\multirow{3}{*}{READ}
-& 10\,000   & 1.07 & 0.90 & 1.00 & 0.41 \\
-& 100\,000  & 5.60 & 0.95 & 1.20 & 0.40 \\
-& 500\,000  & 16.61 & 1.16 & 1.88 & 0.41 \\
+\multirow{3}{*}{insert\_visit}
+& 10k   & 3.37 & 7.53 & 1.41 & \textbf{0.88} \\
+& 100k  & 18.62 & 7.79 & 0.75 & \textbf{0.84} \\
+& 1M    & \textbf{142.54} & 8.16 & 0.74 & \textbf{0.90} \\
 \midrule
-\multirow{3}{*}{UPDATE}
-& 10\,000   & 1.05 & 3.45 & 1.42 & 0.38 \\
-& 100\,000  & 2.02 & 3.25 & 5.89 & 0.40 \\
-& 500\,000  & 7.69 & 3.72 & 22.31 & 0.40 \\
+\multirow{3}{*}{insert\_diagnosis}
+& 10k   & 2.08 & 9.85 & 2.82 & \textbf{0.51} \\
+& 100k  & 2.03 & 21.20 & 2.50 & \textbf{0.45} \\
+& 1M    & 2.17 & 7.13 & 2.72 & \textbf{0.44} \\
 \midrule
-\multirow{3}{*}{DELETE}
-& 10\,000   & 2.81 & 8.60 & 1.43 & 0.77 \\
-& 100\,000  & 5.95 & 9.90 & 1.45 & 0.77 \\
-& 500\,000  & 20.78 & 11.75 & 1.47 & 0.81 \\
+\multirow{3}{*}{insert\_prescription}
+& 10k   & 4.43 & 17.20 & 0.77 & \textbf{0.86} \\
+& 100k  & 6.50 & 20.42 & 0.70 & \textbf{0.85} \\
+& 1M    & \textbf{39.53} & 13.63 & 0.70 & \textbf{0.89} \\
+\midrule
+\multirow{3}{*}{insert\_service}
+& 10k   & 2.11 & 16.94 & 0.74 & \textbf{1.05} \\
+& 100k  & 7.90 & 22.29 & 0.70 & \textbf{0.86} \\
+& 1M    & 2.22 & 8.56 & 0.75 & \textbf{0.88} \\
+\midrule
+\multirow{3}{*}{insert\_test\_result}
+& 10k   & 1.93 & 10.27 & 0.70 & \textbf{0.80} \\
+& 100k  & 1.97 & 13.25 & 0.73 & \textbf{0.78} \\
+& 1M    & 1.99 & 10.11 & 0.68 & \textbf{0.82} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Obserwacja}: PostgreSQL \texttt{insert\_visit} bez indeksów przy 1M rekordów trwa \textbf{142.54~ms} -- walidacja kluczy obcych (\texttt{patient\_id}, \texttt{doctor\_id}) wymaga sekwencyjnego skanowania tabel bez indeksów. \textbf{Redis} konsekwentnie najszybszy w~CREATE ($\sim$0.4--1.2~ms) dzięki operacjom in-memory na prostych strukturach (HSET + SADD pipeline).
+
+\subsection{Scenariusze READ -- porównanie per scenariusz}
+
+\begin{table}[H]
+\centering
+\caption{Czas scenariuszy READ [ms] -- BEZ indeksów}
+\label{tab:read_no}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{select\_patient\_by\_id}
+& 10k   & 0.43 & 0.90 & 0.79 & \textbf{0.48} \\
+& 100k  & 0.44 & 0.90 & 0.83 & \textbf{0.39} \\
+& 1M    & 0.54 & 0.91 & 0.80 & \textbf{0.42} \\
+\midrule
+\multirow{3}{*}{select\_visits\_with\_doctor}
+& 10k   & 0.93 & 1.41 & 2.28 & 1.92 \\
+& 100k  & 3.77 & 0.93 & 2.23 & 1.56 \\
+& 1M    & \textbf{23.12} & 1.15 & 6.17 & 1.63 \\
+\midrule
+\multirow{3}{*}{select\_visit\_diagnoses}
+& 10k   & 0.81 & 0.89 & 1.30 & 1.28 \\
+& 100k  & 3.62 & 0.89 & 0.85 & 0.79 \\
+& 1M    & \textbf{23.36} & 0.89 & 0.94 & 0.65 \\
+\midrule
+\multirow{3}{*}{select\_full\_history}
+& 10k   & 1.66 & 0.92 & 0.90 & 1.22 \\
+& 100k  & 7.89 & 0.99 & 0.83 & 1.24 \\
+& 1M    & \textbf{44.01} & 1.03 & 0.73 & 1.15 \\
+\midrule
+\multirow{3}{*}{select\_aggregated\_costs}
+& 10k   & 1.79 & 1.35 & 0.90 & 0.97 \\
+& 100k  & 8.27 & 6.94 & 0.75 & 0.94 \\
+& 1M    & \textbf{41.63} & 0.94 & 0.75 & 1.04 \\
+\midrule
+\multirow{3}{*}{select\_prescriptions}
+& 10k   & 0.63 & 0.87 & 0.74 & 1.43 \\
+& 100k  & 3.05 & 0.86 & 0.75 & 1.34 \\
+& 1M    & \textbf{17.15} & 0.85 & 0.74 & 1.50 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 
-\subsection{Wyniki z indeksami}
-
 \begin{table}[H]
 \centering
-\caption{Średni czas operacji CRUD z indeksami [ms] -- uśredniony po 6 scenariuszach}
-\label{tab:results_idx}
+\caption{Czas scenariuszy READ [ms] -- Z indeksami}
+\label{tab:read_idx}
 \small
 \begin{tabular}{@{}llrrrr@{}}
 \toprule
-\textbf{Operacja} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
 \midrule
-\multirow{3}{*}{CREATE}
-& 10\,000   & 2.49 & 10.62 & 1.08 & 0.50 \\
-& 100\,000  & 2.54 & 9.65 & 1.09 & 0.40 \\
-& 500\,000  & 2.58 & 11.79 & 1.21 & 0.43 \\
+\multirow{3}{*}{select\_patient\_by\_id}
+& 10k   & 0.45 & 0.98 & 0.81 & \textbf{0.42} \\
+& 100k  & 0.58 & 0.81 & 0.80 & \textbf{0.39} \\
+& 1M    & 0.46 & 0.87 & 0.83 & \textbf{0.39} \\
 \midrule
-\multirow{3}{*}{READ}
-& 10\,000   & 0.54 & 2.34 & 0.89 & 0.43 \\
-& 100\,000  & 0.61 & 12.87 & 0.91 & 0.37 \\
-& 500\,000  & 0.57 & 0.98 & 1.01 & 0.40 \\
+\multirow{3}{*}{select\_visits\_with\_doctor}
+& 10k   & 0.55 & 0.95 & 1.36 & 1.44 \\
+& 100k  & \textbf{0.68} & 18.94 & 1.35 & 1.70 \\
+& 1M    & \textbf{0.66} & 1.06 & 1.44 & 1.64 \\
 \midrule
-\multirow{3}{*}{UPDATE}
-& 10\,000   & 1.01 & 3.26 & 1.74 & 0.41 \\
-& 100\,000  & 1.16 & 6.09 & 5.23 & 0.39 \\
-& 500\,000  & 0.95 & 3.97 & 9.60 & 0.40 \\
+\multirow{3}{*}{select\_visit\_diagnoses}
+& 10k   & 0.48 & 0.98 & 0.79 & 0.73 \\
+& 100k  & 0.65 & 0.87 & 0.91 & 0.54 \\
+& 1M    & \textbf{0.54} & 0.87 & 0.81 & 0.67 \\
 \midrule
-\multirow{3}{*}{DELETE}
-& 10\,000   & 2.54 & 9.13 & 1.69 & 0.79 \\
-& 100\,000  & 2.46 & 8.89 & 1.42 & 0.75 \\
-& 500\,000  & 2.48 & 8.77 & 1.44 & 0.78 \\
+\multirow{3}{*}{select\_full\_history}
+& 10k   & 0.64 & 4.07 & 0.73 & 1.55 \\
+& 100k  & 0.82 & 31.59 & 0.75 & 1.08 \\
+& 1M    & \textbf{0.82} & 1.18 & 0.74 & 1.25 \\
+\midrule
+\multirow{3}{*}{select\_aggregated\_costs}
+& 10k   & 0.53 & 5.83 & 0.78 & 1.05 \\
+& 100k  & 0.68 & 44.58 & 0.75 & 0.89 \\
+& 1M    & \textbf{0.80} & 1.06 & 0.74 & 0.99 \\
+\midrule
+\multirow{3}{*}{select\_prescriptions}
+& 10k   & 0.81 & 0.85 & 0.75 & 1.31 \\
+& 100k  & 0.55 & 0.96 & 0.73 & 1.36 \\
+& 1M    & \textbf{0.57} & 1.13 & 0.74 & 1.47 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\textbf{Kluczowa obserwacja}: PostgreSQL READ przy 1M rekordów:
+\begin{itemize}[noitemsep]
+    \item Bez indeksów: \texttt{select\_full\_history} = \textbf{44.01~ms} (Multi-JOIN z~sekwencyjnym skanowaniem)
+    \item Z~indeksami: \texttt{select\_full\_history} = \textbf{0.82~ms} (Bitmap Index Scan + Hash Join)
+    \item Przyspieszenie: \textbf{98\%} -- 54-krotne przyspieszenie dzięki indeksom.
+\end{itemize}
 
-\subsection{Porównanie: wpływ indeksów na wydajność}
+\textbf{Redis} wykazuje stabilne czasy READ ($\sim$0.4--1.6~ms) niezależnie od skali, co potwierdza O(1) złożoność dostępu do danych in-memory. Scenariusze wielokluczowe (\texttt{select\_visits\_with\_doctor}: $\sim$1.6~ms) wymagają pipeline'ów SMEMBERS + GET, ale latencja jest nadal niższa niż PostgreSQL bez indeksów.
+
+
+\subsection{Scenariusze UPDATE -- porównanie per scenariusz}
 
 \begin{table}[H]
 \centering
-\caption{Zmiana wydajności po zastosowaniu indeksów (skala 500\,000) -- wartości ujemne = przyspieszenie}
+\caption{Czas scenariuszy UPDATE [ms] -- BEZ indeksów vs Z indeksami (skala 1M)}
+\label{tab:update_1m}
+\small
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+ & \multicolumn{2}{c}{\textbf{PostgreSQL}} & \multicolumn{2}{c}{\textbf{MySQL}} & \multicolumn{2}{c}{\textbf{MongoDB}} & \multicolumn{2}{c}{\textbf{Redis}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9}
+\textbf{Scenariusz} & \textbf{Bez} & \textbf{Z idx} & \textbf{Bez} & \textbf{Z idx} & \textbf{Bez} & \textbf{Z idx} & \textbf{Bez} & \textbf{Z idx} \\
+\midrule
+update\_patient\_name & 1.14 & 1.09 & 3.81 & 4.07 & 0.72 & 0.72 & \textbf{0.42} & \textbf{0.39} \\
+update\_visit\_status & 1.02 & 1.06 & 1.80 & 2.60 & 0.72 & 0.73 & \textbf{0.38} & \textbf{0.39} \\
+update\_service\_price & \textbf{43.45} & \textbf{0.85} & 3.86 & 4.21 & 0.93 & 0.77 & \textbf{0.38} & \textbf{0.39} \\
+update\_diagnosis\_notes & \textbf{48.84} & \textbf{0.44} & 1.83 & 4.32 & 0.85 & 0.71 & 0.72 & 0.76 \\
+update\_doctor\_license & 1.08 & 1.03 & 3.85 & 3.77 & 0.82 & 0.74 & \textbf{0.36} & \textbf{0.41} \\
+update\_department\_phone & 1.01 & 1.01 & 3.85 & 3.68 & 0.69 & 0.71 & \textbf{0.37} & \textbf{0.45} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Obserwacja}: PostgreSQL scenariusze U3 i~U4 (WHERE po \texttt{visit\_id}) przy 1M bez indeksów wymagają sekwencyjnego skanowania -- odpowiednio \textbf{43.45~ms} i~\textbf{48.84~ms}. Z~indeksem na \texttt{visit\_id}: \textbf{0.85~ms} i~\textbf{0.44~ms}. Scenariusze U1, U5, U6 (WHERE po PK) nie zmieniają się, bo klucz główny ma indeks domyślnie. \textbf{Redis} osiąga najniższe czasy UPDATE ($\sim$0.36--0.76~ms) -- operacje HSET/SET na pojedynczych kluczach mają stałą złożoność O(1).
+
+
+\subsection{Scenariusze DELETE -- porównanie per scenariusz}
+
+\begin{table}[H]
+\centering
+\caption{Czas scenariuszy DELETE [ms] -- BEZ indeksów vs Z indeksami (skala 1M)}
+\label{tab:delete_1m}
+\small
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+ & \multicolumn{2}{c}{\textbf{PostgreSQL}} & \multicolumn{2}{c}{\textbf{MySQL}} & \multicolumn{2}{c}{\textbf{MongoDB}} & \multicolumn{2}{c}{\textbf{Redis}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9}
+\textbf{Scenariusz} & \textbf{Bez} & \textbf{Z idx} & \textbf{Bez} & \textbf{Z idx} & \textbf{Bez} & \textbf{Z idx} & \textbf{Bez} & \textbf{Z idx} \\
+\midrule
+delete\_test\_result & 2.04 & 2.06 & 8.59 & 7.29 & 1.41 & 1.39 & \textbf{0.73} & \textbf{0.79} \\
+delete\_diagnosis & 2.00 & 2.07 & 7.39 & 7.08 & 1.39 & 1.44 & \textbf{0.87} & \textbf{0.76} \\
+delete\_patient & \textbf{47.19} & \textbf{2.25} & 7.01 & 8.47 & 1.42 & 1.54 & \textbf{0.80} & \textbf{0.77} \\
+delete\_service & 2.49 & 2.05 & 6.46 & 8.91 & 1.41 & 1.37 & \textbf{0.71} & \textbf{0.72} \\
+delete\_prescription & \textbf{38.65} & \textbf{2.12} & 7.75 & 7.14 & 1.45 & 1.39 & \textbf{0.72} & \textbf{0.73} \\
+delete\_visit\_cascade & \textbf{179.22} & \textbf{4.30} & 14.44 & 14.47 & 1.51 & 1.55 & \textbf{0.78} & \textbf{0.85} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Obserwacja}: \texttt{delete\_visit\_cascade} w~PostgreSQL bez indeksów = \textbf{179.22~ms} (kaskadowe usuwanie wymaga wyszukania powiązanych wierszy w~6 tabelach). Z~indeksami: \textbf{4.30~ms} -- \textbf{42-krotne przyspieszenie}. \textbf{Redis} \texttt{delete\_visit\_cascade} ($\sim$0.78--0.85~ms) wymaga jawnego usunięcia wielu kluczy pipeline'em, ale operacja jest in-memory i~O(1) per klucz.
+
+
+\subsection{Porównanie: wpływ indeksów na wydajność (skala 1M)}
+
+\begin{table}[H]
+\centering
+\caption{Zmiana wydajności po zastosowaniu indeksów -- wybrane scenariusze (skala 1\,000\,000)}
 \label{tab:index_impact}
 \small
 \begin{tabular}{@{}lrrrr@{}}
 \toprule
-\textbf{Operacja} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\textbf{Scenariusz} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
 \midrule
-CREATE & $-86\%$ & $+23\%$ & $+21\%$ & $-4\%$ \\
-READ   & $-97\%$ & $-16\%$ & $-46\%$ & $-2\%$ \\
-UPDATE & $-88\%$ & $+7\%$ & $-57\%$ & $0\%$ \\
-DELETE & $-88\%$ & $-25\%$ & $-2\%$ & $-4\%$ \\
+insert\_patient & $-93\%$ & $+41\%$ & $+159\%$ & $-34\%$ \\
+insert\_visit & $-98\%$ & $-2\%$ & $+21\%$ & $-11\%$ \\
+select\_visits\_with\_doctor & $\mathbf{-97\%}$ & $-8\%$ & $-77\%$ & $0\%$ \\
+select\_full\_history & $\mathbf{-98\%}$ & $+15\%$ & $+1\%$ & $+9\%$ \\
+select\_aggregated\_costs & $\mathbf{-98\%}$ & $+13\%$ & $-1\%$ & $-4\%$ \\
+update\_service\_price & $\mathbf{-98\%}$ & $+9\%$ & $-17\%$ & $+2\%$ \\
+update\_diagnosis\_notes & $\mathbf{-99\%}$ & $+136\%$ & $-16\%$ & $+6\%$ \\
+delete\_patient & $\mathbf{-95\%}$ & $+21\%$ & $+8\%$ & $-3\%$ \\
+delete\_visit\_cascade & $\mathbf{-98\%}$ & $0\%$ & $+3\%$ & $+9\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{Kluczowe obserwacje:}
-\begin{itemize}[noitemsep]
-    \item PostgreSQL zyskuje najbardziej na indeksach -- operacje READ przyspieszyły o~\textbf{97\%} (z~16.61~ms do 0.57~ms dla 500k).
-    \item W PostgreSQL nawet operacje CREATE przyspieszyły (mniej czasu na walidację FK z indeksem).
-    \item MongoDB: READ przyspieszył o~46\%, UPDATE o~57\% -- indeksy na zagnieżdżonych polach dokumentu działają efektywnie.
-    \item Redis jest niezmiennie szybki niezależnie od indeksów (O(1) dla operacji klucz-wartość).
-    \item MySQL wykazuje niejednorodne wyniki -- CREATE wolniejsze z~indeksami (+23\%), co potwierdza koszt utrzymania indeksów.
-\end{itemize}
-
 
 % ══════════════════════════════════════════════════════════════════════
 \section{Wizualizacja wyników}
+\label{sec:viz}
 % ══════════════════════════════════════════════════════════════════════
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{crud_comparison_10000.png}
-\caption{Porównanie wydajności CRUD -- skala 10\,000 rekordów}
+\includegraphics[width=0.95\textwidth]{crud_comparison_10000_bez_indeksow.png}
+\caption{Porównanie scenariuszy CRUD -- skala 10\,000 (bez indeksów)}
 \label{fig:crud10k}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{crud_comparison_100000.png}
-\caption{Porównanie wydajności CRUD -- skala 100\,000 rekordów}
+\includegraphics[width=0.95\textwidth]{crud_comparison_100000_bez_indeksow.png}
+\caption{Porównanie scenariuszy CRUD -- skala 100\,000 (bez indeksów)}
 \label{fig:crud100k}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{crud_comparison_500000.png}
-\caption{Porównanie wydajności CRUD -- skala 500\,000 rekordów}
-\label{fig:crud500k}
+\includegraphics[width=0.95\textwidth]{crud_comparison_1000000_bez_indeksow.png}
+\caption{Porównanie scenariuszy CRUD -- skala 1\,000\,000 (bez indeksów)}
+\label{fig:crud1m}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{scalability.png}
-\caption{Skalowalność -- wpływ rozmiaru danych na średni czas operacji CRUD}
+\includegraphics[width=0.95\textwidth]{crud_comparison_1000000_z_indeksami.png}
+\caption{Porównanie scenariuszy CRUD -- skala 1\,000\,000 (z indeksami)}
+\label{fig:crud1m_idx}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{scalability_no_index.png}
+\caption{Skalowalność -- wpływ rozmiaru danych na średni czas operacji (bez indeksów)}
 \label{fig:scalability}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{scenarios_PostgreSQL.png}
-\caption{Szczegółowe wyniki scenariuszy -- PostgreSQL}
+\includegraphics[width=0.95\textwidth]{index_impact_PostgreSQL_1000000.png}
+\caption{Wpływ indeksów na scenariusze -- PostgreSQL (skala 1M)}
+\label{fig:idx_pg}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{index_impact_MySQL_1000000.png}
+\caption{Wpływ indeksów na scenariusze -- MySQL (skala 1M)}
+\label{fig:idx_my}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{index_impact_MongoDB_1000000.png}
+\caption{Wpływ indeksów na scenariusze -- MongoDB (skala 1M)}
+\label{fig:idx_mongo}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{index_impact_Redis_1000000.png}
+\caption{Wpływ indeksów na scenariusze -- Redis (skala 1M)}
+\label{fig:idx_redis}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{scenarios_PostgreSQL_no_index.png}
+\caption{Scenariusze CRUD we wszystkich skalach -- PostgreSQL}
 \label{fig:pg_scenarios}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{scenarios_MySQL.png}
-\caption{Szczegółowe wyniki scenariuszy -- MySQL}
+\includegraphics[width=0.95\textwidth]{scenarios_MySQL_no_index.png}
+\caption{Scenariusze CRUD we wszystkich skalach -- MySQL}
 \label{fig:my_scenarios}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{scenarios_MongoDB.png}
-\caption{Szczegółowe wyniki scenariuszy -- MongoDB}
+\includegraphics[width=0.95\textwidth]{scenarios_MongoDB_no_index.png}
+\caption{Scenariusze CRUD we wszystkich skalach -- MongoDB}
 \label{fig:mongo_scenarios}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{scenarios_Redis.png}
-\caption{Szczegółowe wyniki scenariuszy -- Redis}
+\includegraphics[width=0.95\textwidth]{scenarios_Redis_no_index.png}
+\caption{Scenariusze CRUD we wszystkich skalach -- Redis}
 \label{fig:redis_scenarios}
 \end{figure}
 
@@ -571,135 +692,52 @@ DELETE & $-88\%$ & $-25\%$ & $-2\%$ & $-4\%$ \\
 
 \subsection{Zastosowane indeksy}
 
-W systemach relacyjnych utworzono 16 indeksów B-tree:
+W~systemach relacyjnych utworzono 16 indeksów B-tree na kolumnach kluczy obcych i~kolumnach filtrujących. W~MongoDB utworzono 7 indeksów na kolekcji \texttt{patients} (w~tym na polach zagnieżdżonych: \texttt{visits.status}, \texttt{visits.doctor\_id}, \texttt{visits.diagnoses.disease\_id}).
 
-\begin{lstlisting}[caption={Indeksy w PostgreSQL i MySQL},language=SQL]
-CREATE INDEX idx_patients_last_name ON patients(last_name);
-CREATE INDEX idx_patients_national_id ON patients(national_id);
-CREATE INDEX idx_patients_gender ON patients(gender);
-CREATE INDEX idx_visits_patient_id ON visits(patient_id);
-CREATE INDEX idx_visits_doctor_id ON visits(doctor_id);
-CREATE INDEX idx_visits_status ON visits(status);
-CREATE INDEX idx_visits_date ON visits(visit_date);
-CREATE INDEX idx_performed_services_visit_id ON performed_services(visit_id);
-CREATE INDEX idx_diagnoses_visit_id ON diagnoses(visit_id);
-CREATE INDEX idx_diagnoses_disease_id ON diagnoses(disease_id);
-CREATE INDEX idx_prescriptions_visit_id ON prescriptions(visit_id);
-CREATE INDEX idx_prescription_items_prescription_id
-    ON prescription_items(prescription_id);
-CREATE INDEX idx_test_results_visit_id ON test_results(visit_id);
-CREATE INDEX idx_test_results_parameter ON test_results(parameter_name);
-CREATE INDEX idx_doctors_department ON doctors(department_id);
-CREATE INDEX idx_doctors_specialization ON doctors(specialization_id);
-\end{lstlisting}
+\subsection{Analiza planów zapytań (EXPLAIN)}
 
-W MongoDB utworzono indeksy na kolekcji \texttt{patients}:
-\begin{lstlisting}[caption={Indeksy w MongoDB}]
-db.patients.createIndex({ "last_name": 1 })
-db.patients.createIndex({ "national_id": 1 })
-db.patients.createIndex({ "gender": 1 })
-db.patients.createIndex({ "visits.status": 1 })
-db.patients.createIndex({ "visits.doctor_id": 1 })
-db.patients.createIndex({ "visits.visit_date": 1 })
-db.patients.createIndex({ "visits.diagnoses.disease_id": 1 })
-\end{lstlisting}
-
-
-% ══════════════════════════════════════════════════════════════════════
-\section{Analiza planów zapytań (EXPLAIN)}
-% ══════════════════════════════════════════════════════════════════════
-
-\subsection{PostgreSQL -- EXPLAIN ANALYZE}
-
-\textbf{Zapytanie R2 -- JOIN wizyt z lekarzami} (skala 500\,000, z~indeksami):
-
-\begin{lstlisting}[caption={Plan zapytania PostgreSQL -- JOIN wizyt z lekarzami}]
+\textbf{PostgreSQL} -- zapytanie R2 (JOIN wizyt z~lekarzami, skala 1M, z~indeksami):
+\begin{lstlisting}
 Hash Join  (cost=17.51..59.87 rows=11 width=33)
-  (actual time=0.128..0.140 rows=7 loops=1)
   Hash Cond: (v.doctor_id = d.id)
   -> Bitmap Heap Scan on visits v
-       (cost=4.51..46.84 rows=11 width=22)
-       (actual time=0.049..0.060 rows=7 loops=1)
        Recheck Cond: (patient_id = 1)
        -> Bitmap Index Scan on idx_visits_patient_id
-            (cost=0.00..4.50 rows=11 width=0)
-            (actual time=0.045..0.045 rows=7 loops=1)
-  -> Hash (cost=8.00..8.00 rows=400 width=19)
-       (actual time=0.073..0.074 rows=400 loops=1)
-  Planning Time: 0.180 ms
+  -> Hash -> Seq Scan on doctors d
   Execution Time: 0.159 ms
 \end{lstlisting}
 
-Optymalizator PostgreSQL wykorzystuje \texttt{Bitmap Index Scan} na indeksie \texttt{idx\_visits\_patient\_id}, a~następnie \texttt{Hash Join} z~tabelą \texttt{doctors}. Całkowity czas wykonania to zaledwie \textbf{0.159~ms} przy 500\,000 wizytach.
+Optymalizator wykorzystuje \texttt{Bitmap Index Scan} na \texttt{idx\_visits\_patient\_id}, eliminując sekwencyjne skanowanie tabeli wizyt (1M wierszy).
 
-\textbf{Zapytanie z~agregacją -- SUM kosztów usług}:
+\textbf{MongoDB} -- find po \texttt{\_id}: etap \texttt{IDHACK}, \texttt{totalDocsExamined: 1}, czas $<1$~ms.
 
-\begin{lstlisting}[caption={Plan zapytania PostgreSQL -- agregacja z GROUP BY}]
-GroupAggregate  (cost=140.28..140.50 rows=11 width=36)
-  -> Sort  (cost=140.28..140.31 rows=11 width=10)
-     -> Nested Loop  (cost=4.93..140.09 rows=11 width=10)
-        -> Bitmap Heap Scan on visits v
-             -> Bitmap Index Scan on idx_visits_patient_id
-        -> Index Scan using idx_performed_services_visit_id
-             on performed_services ps
-  Planning Time: 0.146 ms
-  Execution Time: 0.100 ms
-\end{lstlisting}
-
-PostgreSQL stosuje \texttt{Nested Loop} z~dwoma skanami indeksowymi, co daje czas wykonania \textbf{0.100~ms}.
-
-\subsection{MySQL -- EXPLAIN FORMAT=JSON}
-
-MySQL wykorzystuje ten sam indeks \texttt{idx\_visits\_patient\_id} z~typem dostępu \texttt{ref} (przeszukanie indeksu). Koszt zapytania wynosi \textbf{4.90} (w jednostkach wewnętrznych MySQL). Plan potwierdza użycie \texttt{nested\_loop} z~dostępem \texttt{eq\_ref} do tabeli \texttt{doctors} przez klucz główny.
-
-\subsection{MongoDB -- explain executionStats}
-
-\begin{lstlisting}[caption={Plan zapytania MongoDB -- find po \_id}]
-executionSuccess: True
-nReturned: 1
-executionTimeMillis: 0
-totalKeysExamined: 1
-totalDocsExamined: 1
-stage: IDHACK
-\end{lstlisting}
-
-Zapytanie po \texttt{\_id} wykorzystuje optymalizację \texttt{IDHACK} -- bezpośredni dostęp do dokumentu w czasie $<1$~ms.
-
-Zapytanie po zagnieżdżonym polu \texttt{visits.status = 'completed'} z~indeksem:
-
-\begin{lstlisting}[caption={Plan zapytania MongoDB -- find po statusie wizyty}]
-executionSuccess: True
-nReturned: 45903
-executionTimeMillis: 42
-totalKeysExamined: 45903
-totalDocsExamined: 45903
-stage: FETCH
-\end{lstlisting}
-
-Indeks na \texttt{visits.status} pozwala na efektywne przefiltrowanie -- \textbf{42~ms} dla zwrócenia 45\,903 dokumentów ze zbioru 50\,000.
+\textbf{Redis} -- Redis nie posiada mechanizmu EXPLAIN ani planów zapytań. Dostęp do danych odbywa się bezpośrednio przez klucz (O(1) HGET/GET) lub przez komendy zbiorowe (SMEMBERS, LRANGE). Złożoność operacji jest deterministyczna i~wynika z~dokumentacji komend Redis, a~nie z~optymalizatora zapytań.
 
 
 % ══════════════════════════════════════════════════════════════════════
 \section{Weryfikacja hipotezy badawczej}
 % ══════════════════════════════════════════════════════════════════════
 
-\textbf{H1}: \textit{Zastosowanie indeksów znacząco poprawia wydajność operacji SELECT kosztem spadku wydajności operacji INSERT i UPDATE.}
+\textbf{H1}: \textit{Zastosowanie indeksów znacząco poprawia wydajność operacji SELECT kosztem spadku wydajności operacji INSERT i~UPDATE.}
 
-\subsection{Analiza wyników}
+\subsection{Analiza wyników -- PostgreSQL (skala 1M)}
 
 \begin{table}[H]
 \centering
-\caption{Weryfikacja hipotezy -- PostgreSQL, skala 500\,000}
-\label{tab:hypothesis}
+\caption{Weryfikacja hipotezy -- PostgreSQL, skala 1\,000\,000}
 \small
-\begin{tabular}{@{}lrrr@{}}
+\begin{tabular}{@{}lrrrl@{}}
 \toprule
-\textbf{Operacja} & \textbf{Bez indeksów [ms]} & \textbf{Z indeksami [ms]} & \textbf{Zmiana} \\
+\textbf{Scenariusz} & \textbf{Bez [ms]} & \textbf{Z idx [ms]} & \textbf{Zmiana} & \textbf{Wynik} \\
 \midrule
-CREATE (INSERT) & 18.90 & 2.58 & $-86\%$ (przyspieszenie) \\
-READ (SELECT) & 16.61 & 0.57 & $\mathbf{-97\%}$ (przyspieszenie) \\
-UPDATE & 7.69 & 0.95 & $-88\%$ (przyspieszenie) \\
-DELETE & 20.78 & 2.48 & $-88\%$ (przyspieszenie) \\
+insert\_patient & 38.43 & 2.64 & $-93\%$ & przyspieszenie \\
+insert\_visit & 142.54 & 2.42 & $-98\%$ & przyspieszenie \\
+select\_visits\_with\_doctor & 23.12 & 0.66 & $-97\%$ & \textbf{potwierdzenie H1} \\
+select\_full\_history & 44.01 & 0.82 & $-98\%$ & \textbf{potwierdzenie H1} \\
+select\_aggregated\_costs & 41.63 & 0.80 & $-98\%$ & \textbf{potwierdzenie H1} \\
+update\_service\_price & 43.45 & 0.85 & $-98\%$ & przyspieszenie \\
+update\_diagnosis\_notes & 48.84 & 0.44 & $-99\%$ & przyspieszenie \\
+delete\_visit\_cascade & 179.22 & 4.30 & $-98\%$ & przyspieszenie \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -709,13 +747,19 @@ DELETE & 20.78 & 2.48 & $-88\%$ (przyspieszenie) \\
 Hipoteza H1 została \textbf{częściowo potwierdzona}:
 
 \begin{enumerate}[noitemsep]
-    \item \textbf{Potwierdzenie}: Operacje READ (SELECT) zyskały najwyższe przyspieszenie -- \textbf{97\%} w PostgreSQL dla skali 500\,000. Indeksy eliminują konieczność sekwencyjnego skanowania (Seq Scan) na rzecz skanów indeksowych (Index Scan, Bitmap Index Scan).
+    \item \textbf{Potwierdzenie}: Operacje READ (SELECT) zyskały najwyższe przyspieszenie -- do \textbf{99\%} w~PostgreSQL dla skali 1M. Indeksy eliminują sekwencyjne skanowanie na rzecz skanów indeksowych.
 
-    \item \textbf{Odrzucenie części hipotezy}: Wbrew oczekiwaniom, operacje INSERT i UPDATE w PostgreSQL \textbf{również przyspieszyły} po zastosowaniu indeksów. Wynika to z~faktu, że scenariusze INSERT obejmują wstawianie rekordów z~kluczami obcymi -- indeksy na kolumnach referencyjnych przyspieszają walidację FK. Ponadto operacje UPDATE korzystają z~indeksów do szybszego lokalizowania aktualizowanego wiersza.
+    \item \textbf{Odrzucenie części hipotezy}: Wbrew oczekiwaniom, operacje INSERT i~UPDATE w~PostgreSQL \textbf{również przyspieszyły} po zastosowaniu indeksów. Wynika to z~faktu, że:
+    \begin{itemize}[noitemsep]
+        \item Scenariusze INSERT (\texttt{insert\_patient}, \texttt{insert\_visit}) obejmują wstawianie z~kluczami obcymi -- indeksy na kolumnach referencyjnych przyspieszają walidację FK (zamiast Seq Scan: Index Scan).
+        \item Scenariusze UPDATE (\texttt{update\_service\_price}, \texttt{update\_diagnosis\_notes}) wyszukują wiersz po \texttt{visit\_id} -- z~indeksem lokalizacja wiersza jest O(log~n) zamiast O(n).
+    \end{itemize}
 
-    \item \textbf{MySQL potwierdza hipotezę}: W MySQL operacje CREATE są wolniejsze z~indeksami (+23\%), co jest zgodne z~klasycznym kompromisem indeks vs. zapis. Każdy INSERT wymaga aktualizacji 16 dodatkowych struktur indeksowych.
+    \item \textbf{MySQL potwierdza klasyczny kompromis}: INSERT w~MySQL jest wolniejszy z~indeksami (\texttt{insert\_patient}: +41\%), co odpowiada kosztowi aktualizacji 16 struktur indeksowych przy każdym wstawieniu. MySQL nie wykazuje dramatycznego spadku READ bez indeksów, prawdopodobnie dzięki efektywnemu buforowaniu InnoDB.
 
-    \item \textbf{Redis}: Niezależny od indeksów -- operacje O(1) na strukturach klucz-wartość.
+    \item \textbf{MongoDB}: Minimalny wpływ indeksów na większość operacji -- model dokumentowy z~dostępem po \texttt{\_id} (IDHACK) jest naturalnie szybki. Wyjątek: \texttt{select\_visits\_with\_doctor} przyspieszył o~77\% dzięki indeksowi na \texttt{visits.doctor\_id}.
+
+    \item \textbf{Redis}: Indeksy SQL/MongoDB nie mają wpływu na Redis -- baza klucz-wartość operuje na adresowaniu bezpośrednim. Wahania w~tabeli \ref{tab:index_impact} ($\pm$9\%) wynikają wyłącznie z~naturalnego szumu pomiarowego. Redis konsekwentnie najszybszy we wszystkich kategoriach CRUD ($\sim$0.4--1.6~ms), co potwierdza charakter bazy in-memory z~operacjami O(1).
 \end{enumerate}
 
 
@@ -725,51 +769,45 @@ Hipoteza H1 została \textbf{częściowo potwierdzona}:
 
 \subsection{Skalowalność}
 
-Na podstawie wykresu skalowalności (Rysunek~\ref{fig:scalability}) można zaobserwować:
-
+Na podstawie wyników i~wykresu skalowalności (Rys.~\ref{fig:scalability}):
 \begin{itemize}[noitemsep]
-    \item \textbf{Redis}: Stały czas operacji niezależnie od rozmiaru danych ($\sim$0.4~ms). Potwierdza złożoność O(1) operacji klucz-wartość.
-    \item \textbf{MongoDB}: Liniowy wzrost czasu READ i UPDATE wraz ze wzrostem danych (bez indeksów). Z~indeksami wzrost jest minimalny.
-    \item \textbf{PostgreSQL}: Bez indeksów -- gwałtowny wzrost czasu READ (od 1.07~ms do 16.61~ms dla 50x większych danych). Z~indeksami -- prawie stały czas.
-    \item \textbf{MySQL}: Relatywnie stabilne czasy CREATE/UPDATE niezależnie od skali (buforowanie InnoDB).
+    \item \textbf{PostgreSQL bez indeksów}: Gwałtowny wzrost czasów READ i~DELETE ze skalą (od 1.66~ms do 44.01~ms dla R4; od 5.94~ms do 179.22~ms dla D6). Z~indeksami -- prawie stały czas niezależnie od skali.
+    \item \textbf{MySQL}: Stabilne czasy READ niezależnie od skali (bufor InnoDB), ale CREATE spowalnia nieregularnie.
+    \item \textbf{MongoDB}: Stały czas dla większości operacji dzięki modelowi dokumentowemu. Wyjątek: \texttt{select\_visits\_with\_doctor} rośnie z~2.28~ms do 6.17~ms.
+    \item \textbf{Redis}: Niemal idealnie stałe czasy niezależnie od skali danych (od 10k do 1M). Operacje CRUD mieszczą się w~przedziale 0.36--1.63~ms. Potwierdza to O(1) złożoność operacji na tablicach haszujących w~pamięci RAM.
 \end{itemize}
 
 \subsection{Porównanie modeli danych}
 
 \textbf{Model relacyjny} (PostgreSQL, MySQL):
 \begin{itemize}[noitemsep]
-    \item Wymaga JOINów, ale z~indeksami osiąga doskonałą wydajność.
+    \item Wymaga JOINów, ale z~indeksami osiąga doskonałą wydajność ($<1$~ms nawet przy 1M).
     \item Silne gwarancje spójności (ACID, klucze obce).
-    \item Lepszy dla złożonych zapytań analitycznych.
+    \item PostgreSQL silnie zależny od indeksów -- bez nich wydajność drastycznie spada ze skalą.
 \end{itemize}
 
 \textbf{Model dokumentowy} (MongoDB):
 \begin{itemize}[noitemsep]
+    \item Stała wydajność niezależnie od skali (odczyty po \texttt{\_id}: $\sim$0.8~ms).
     \item Eliminuje JOINy dzięki zagnieżdżeniom.
-    \item Szybsze odczyty pojedynczych dokumentów.
-    \item Wolniejsze UPDATE na zagnieżdżonych tablicach (szczególnie update\_many).
+    \item Operacje \texttt{aggregate} z~\texttt{\$unwind} kosztowne na dużych dokumentach.
 \end{itemize}
 
 \textbf{Model klucz-wartość} (Redis):
 \begin{itemize}[noitemsep]
-    \item Najszybszy dla prostych operacji CRUD.
-    \item Brak możliwości złożonych zapytań.
-    \item Idealny jako warstwa cache.
+    \item Najniższa latencja ze wszystkich testowanych baz -- operacje pojedynczego klucza w~$\sim$0.4~ms.
+    \item Brak JOINów wymaga wielokluczowych pipeline'ów (SMEMBERS $\rightarrow$ batch GET $\rightarrow$ batch HGETALL), co zwiększa latencję złożonych odczytów do $\sim$1.5~ms.
+    \item Brak indeksów -- wydajność determinowana wyłącznie złożonością algorytmiczną komend.
+    \item Dane przechowywane wyłącznie w~RAM -- ograniczona pojemność, ale brak opóźnień dyskowych.
 \end{itemize}
 
 \subsection{Dane półustrukturalne (JSON)}
 
-MongoDB przechowuje dane w formacie BSON (Binary JSON), co stanowi wykorzystanie danych półustrukturalnych w projekcie. Dokumenty pacjentów zawierają zagnieżdżone tablice wizyt, diagnoz, recept -- bez sztywnego schematu. PostgreSQL również obsługuje JSON/JSONB, jednak w~tym projekcie skupiono się na modelu relacyjnym z~normalizacją.
+MongoDB przechowuje dane w~formacie BSON (Binary JSON), co stanowi wykorzystanie danych półustrukturalnych. Dokumenty pacjentów zawierają zagnieżdżone tablice wizyt, diagnoz, recept -- bez sztywnego schematu.
 
 \subsection{Automatyzacja testów}
 
-Projekt realizuje pełną automatyzację:
-\begin{itemize}[noitemsep]
-    \item Jeden skrypt \texttt{run\_all.py} uruchamia kompletny pipeline benchmarkowy.
-    \item Automatyczne generowanie danych, wstawianie, testy, raporty i wykresy.
-    \item Parametryzowalne skale: \texttt{python run\_all.py --scales 10000 100000 500000}.
-    \item Wyniki zapisywane w~formacie CSV, wykresy w~PNG, raport EXPLAIN w~TXT.
-\end{itemize}
+Projekt realizuje pełną automatyzację: jeden skrypt \texttt{run\_all.py} uruchamia kompletny pipeline (generowanie danych, wstawianie, benchmarki bez/z~indeksami, EXPLAIN, wykresy).
 
 
 % ══════════════════════════════════════════════════════════════════════
@@ -777,22 +815,22 @@ Projekt realizuje pełną automatyzację:
 % ══════════════════════════════════════════════════════════════════════
 
 \begin{enumerate}
-    \item \textbf{Redis} jest bezkonkurencyjnie najszybszy dla prostych operacji CRUD ($\sim$0.4~ms), ale nie nadaje się do złożonych zapytań relacyjnych.
+    \item \textbf{Redis} osiąga najniższą latencję ze wszystkich testowanych baz -- operacje CRUD w~przedziale \textbf{0.36--1.63~ms} niezależnie od skali danych (10k--1M). Wynika to z~operacji w~pamięci RAM z~O(1) złożonością. Wadą jest brak relacji, brak JOINów i~ograniczona pojemność.
 
-    \item \textbf{PostgreSQL z~indeksami} oferuje najlepszy stosunek wydajności do funkcjonalności -- operacje READ w~0.57~ms nawet przy 500\,000 wizytach, zachowując pełne ACID i~integralność referencyjną.
+    \item \textbf{PostgreSQL z~indeksami} oferuje najlepszą wydajność dla złożonych zapytań relacyjnych -- operacje READ z~wieloma JOINami w~0.5--0.8~ms nawet przy 1M wizytach. Bez indeksów PostgreSQL jest \textbf{najwolniejszy} ze wszystkich testowanych baz (do 179~ms).
 
-    \item \textbf{MongoDB} sprawdza się doskonale dla odczytów pojedynczych dokumentów i~systemów o~elastycznym schemacie, ale operacje UPDATE na zagnieżdżonych strukturach są kosztowne przy dużych zbiorach.
+    \item \textbf{MongoDB} wykazuje stabilną, niską latencję ($\sim$0.7--1.5~ms) niezależnie od skali i~indeksów, dzięki modelowi dokumentowemu z~dostępem po \texttt{\_id}. Wadą jest wyższy koszt operacji na zagnieżdżonych tablicach.
 
-    \item \textbf{MySQL} wykazuje stabilną wydajność niezależnie od skali, ale jest wolniejszy od PostgreSQL w~operacjach z~wieloma JOINami.
+    \item \textbf{MySQL} zachowuje stabilne czasy dzięki buforowaniu InnoDB, ale jest wolniejszy od PostgreSQL z~indeksami w~operacjach z~wieloma JOINami. CREATE konsekwentnie wolniejsze niż w~pozostałych bazach (7--17~ms).
 
-    \item \textbf{Indeksy są kluczowe} dla wydajności systemów relacyjnych -- przyspieszają READ o~nawet 97\%, a~w PostgreSQL przyspieszają również operacje zapisu (dzięki szybszej walidacji FK).
+    \item \textbf{Indeksy są kluczowe} dla PostgreSQL -- eliminują Seq Scan, dając przyspieszenie \textbf{do 99\%} w~scenariuszach z~JOINami i~filtrowaniem po kolumnach niebędących PK. Co istotne, w~PostgreSQL indeksy przyspieszają również INSERT (walidacja FK) i~UPDATE (lokalizacja wiersza). Redis nie korzysta z~indeksów -- operacje bazują na bezpośrednim adresowaniu kluczy.
 
     \item \textbf{Wybór SZBD} powinien być podyktowany charakterem aplikacji:
     \begin{itemize}[noitemsep]
-        \item Złożone zapytania analityczne $\rightarrow$ PostgreSQL
+        \item Złożone zapytania analityczne $\rightarrow$ PostgreSQL (z~indeksami)
         \item Proste aplikacje webowe $\rightarrow$ MySQL
-        \item Elastyczny schemat, agregacje $\rightarrow$ MongoDB
-        \item Cache, sesje, kolejki $\rightarrow$ Redis
+        \item Elastyczny schemat, niski czas odpowiedzi $\rightarrow$ MongoDB
+        \item Najniższa latencja, cache, sesje, kolejki $\rightarrow$ Redis
     \end{itemize}
 \end{enumerate}
 

@@ -1,37 +1,36 @@
 \babel@toc {polish}{}\relax 
-\contentsline {section}{\numberline {1}Cel i zakres pracy}{4}{section.1}%
-\contentsline {subsection}{\numberline {1.1}Hipoteza badawcza}{4}{subsection.1.1}%
-\contentsline {section}{\numberline {2}Opis wybranych systemów zarządzania bazami danych}{4}{section.2}%
-\contentsline {subsection}{\numberline {2.1}PostgreSQL 16}{4}{subsection.2.1}%
-\contentsline {subsection}{\numberline {2.2}MySQL 8.0}{4}{subsection.2.2}%
-\contentsline {subsection}{\numberline {2.3}MongoDB 7}{5}{subsection.2.3}%
-\contentsline {subsection}{\numberline {2.4}Redis 7}{5}{subsection.2.4}%
-\contentsline {section}{\numberline {3}Awaryjność, bezpieczeństwo, migracje, integracje i skalowalność}{6}{section.3}%
-\contentsline {section}{\numberline {4}Opis zbioru danych}{6}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Modele danych w systemach nierelacyjnych}{7}{subsection.4.1}%
-\contentsline {subsection}{\numberline {4.2}Skale danych testowych}{8}{subsection.4.2}%
-\contentsline {section}{\numberline {5}Opis aplikacji testowej}{8}{section.5}%
-\contentsline {subsection}{\numberline {5.1}Wymagania}{8}{subsection.5.1}%
-\contentsline {subsection}{\numberline {5.2}Wykorzystane technologie i narzędzia}{8}{subsection.5.2}%
-\contentsline {subsection}{\numberline {5.3}Struktura projektu i opis działania}{8}{subsection.5.3}%
-\contentsline {section}{\numberline {6}Opis scenariuszy testowych}{9}{section.6}%
-\contentsline {section}{\numberline {7}Wyniki testów wydajnościowych}{11}{section.7}%
-\contentsline {subsection}{\numberline {7.1}Wyniki bez indeksów}{11}{subsection.7.1}%
-\contentsline {subsection}{\numberline {7.2}Wyniki z indeksami}{11}{subsection.7.2}%
-\contentsline {subsection}{\numberline {7.3}Porównanie: wpływ indeksów na wydajność}{12}{subsection.7.3}%
+\contentsline {section}{\numberline {1}Cel i zakres pracy}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Hipoteza badawcza}{3}{subsection.1.1}%
+\contentsline {section}{\numberline {2}Opis wybranych systemów zarządzania bazami danych}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}PostgreSQL 16}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}MySQL 8.0}{3}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}MongoDB 7}{4}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Redis 7}{4}{subsection.2.4}%
+\contentsline {section}{\numberline {3}Awaryjność, bezpieczeństwo, migracje, integracje i skalowalność}{5}{section.3}%
+\contentsline {section}{\numberline {4}Opis zbioru danych}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Modele danych w systemach nierelacyjnych}{6}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Skale danych testowych}{7}{subsection.4.2}%
+\contentsline {section}{\numberline {5}Opis aplikacji testowej}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Wymagania}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Wykorzystane technologie i narzędzia}{7}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Struktura projektu i opis działania}{7}{subsection.5.3}%
+\contentsline {section}{\numberline {6}Opis scenariuszy testowych}{8}{section.6}%
+\contentsline {section}{\numberline {7}Wyniki testów wydajnościowych}{9}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Scenariusze CREATE -- porównanie per scenariusz}{9}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Scenariusze READ -- porównanie per scenariusz}{10}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Scenariusze UPDATE -- porównanie per scenariusz}{11}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Scenariusze DELETE -- porównanie per scenariusz}{12}{subsection.7.4}%
+\contentsline {subsection}{\numberline {7.5}Porównanie: wpływ indeksów na wydajność (skala 1M)}{12}{subsection.7.5}%
 \contentsline {section}{\numberline {8}Wizualizacja wyników}{13}{section.8}%
 \contentsline {section}{\numberline {9}Analiza indeksów}{19}{section.9}%
 \contentsline {subsection}{\numberline {9.1}Zastosowane indeksy}{19}{subsection.9.1}%
-\contentsline {section}{\numberline {10}Analiza planów zapytań (EXPLAIN)}{20}{section.10}%
-\contentsline {subsection}{\numberline {10.1}PostgreSQL -- EXPLAIN ANALYZE}{20}{subsection.10.1}%
-\contentsline {subsection}{\numberline {10.2}MySQL -- EXPLAIN FORMAT=JSON}{20}{subsection.10.2}%
-\contentsline {subsection}{\numberline {10.3}MongoDB -- explain executionStats}{21}{subsection.10.3}%
-\contentsline {section}{\numberline {11}Weryfikacja hipotezy badawczej}{21}{section.11}%
-\contentsline {subsection}{\numberline {11.1}Analiza wyników}{21}{subsection.11.1}%
-\contentsline {subsection}{\numberline {11.2}Wnioski dotyczące hipotezy}{21}{subsection.11.2}%
-\contentsline {section}{\numberline {12}Rozszerzona analiza wyników}{22}{section.12}%
-\contentsline {subsection}{\numberline {12.1}Skalowalność}{22}{subsection.12.1}%
-\contentsline {subsection}{\numberline {12.2}Porównanie modeli danych}{22}{subsection.12.2}%
-\contentsline {subsection}{\numberline {12.3}Dane półustrukturalne (JSON)}{23}{subsection.12.3}%
-\contentsline {subsection}{\numberline {12.4}Automatyzacja testów}{23}{subsection.12.4}%
-\contentsline {section}{\numberline {13}Podsumowanie i wnioski}{23}{section.13}%
+\contentsline {subsection}{\numberline {9.2}Analiza planów zapytań (EXPLAIN)}{19}{subsection.9.2}%
+\contentsline {section}{\numberline {10}Weryfikacja hipotezy badawczej}{20}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Analiza wyników -- PostgreSQL (skala 1M)}{20}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Wnioski dotyczące hipotezy}{20}{subsection.10.2}%
+\contentsline {section}{\numberline {11}Rozszerzona analiza wyników}{21}{section.11}%
+\contentsline {subsection}{\numberline {11.1}Skalowalność}{21}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}Porównanie modeli danych}{21}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Dane półustrukturalne (JSON)}{21}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Automatyzacja testów}{21}{subsection.11.4}%
+\contentsline {section}{\numberline {12}Podsumowanie i wnioski}{21}{section.12}%

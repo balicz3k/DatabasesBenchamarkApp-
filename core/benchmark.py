@@ -2,6 +2,17 @@
 core/benchmark.py – 24 scenariusze testowe CRUD x 4 bazy danych.
 Każdy scenariusz wykonywany RUNS razy, raportowana jest średnia.
 Wyniki zapisywane do CSV; EXPLAIN do osobnego pliku tekstowego.
+
+UWAGA METODOLOGICZNA – Redis vs. SQL/MongoDB:
+  Redis jest bazą klucz-wartość (in-memory). Nie obsługuje JOINów ani
+  transakcji wielotabelowych. Scenariusze Redis symulują odpowiedniki
+  logiczne operacji SQL poprzez wielokluczowe pipeline'y:
+    - insert_patient  → pipeline HSET+SADD (pacjent + mapowanie wizyt)
+    - select_visits_with_doctor → SMEMBERS + pipeline GET/HGETALL (symulacja JOIN)
+    - select_patient_full_history → 2-fazowy pipeline (pacjent + wizyty + diagnozy)
+    - select_aggregated_costs → SMEMBERS + batch HGETALL + agregacja w kliencie
+  Dlatego czasy Redis nie są w pełni porównywalne z SQL (brak JOINów, brak dysku),
+  ale scenariusze odzwierciedlają realistyczne wzorce dostępu klucz-wartość.
 """
 
 import csv
@@ -20,6 +31,11 @@ RESULTS_FILE_INDEXED = os.path.join(RESULTS_DIR, "results_indexed.csv")
 EXPLAIN_FILE = os.path.join(RESULTS_DIR, "explain_report.txt")
 RUNS = 3
 
+CSV_HEADER = [
+    "Database", "Scale", "Indexed",
+    "Operation_Type", "Scenario_Name", "Average_Time_Seconds",
+]
+
 ProgressCallback = Optional[Callable[[str], None]]
 
 
@@ -33,6 +49,7 @@ class BenchmarkEngine:
     def __init__(self, connection_manager: ConnectionManager, scale: int):
         self.cm = connection_manager
         self.scale = scale
+        self.is_indexed: bool = False
         self.results: list[tuple] = []
         cfg = SCALE_MAP.get(scale, {})
         self.max_patient = cfg.get("patients", max(1, scale // 5))
@@ -42,9 +59,27 @@ class BenchmarkEngine:
         self.max_service = cfg.get("medical_services", 50)
         self.max_medication = cfg.get("medications", 80)
         self.max_department = cfg.get("departments", 10)
+        # Przybliżona liczba recept (~40% wizyt ma recepte)
+        self.max_prescription = max(1, int(self.max_visit * 0.4))
+
+        # Bufor patient_id z potwierdzonymi wizytami (MongoDB)
+        self._cached_mongo_pids: Optional[list] = None
 
     def _rid(self, max_id: int) -> int:
         return random.randint(1, max(1, max_id))
+
+    def _mongo_pid_with_visits(self, db) -> int:
+        """Zwraca losowy _id pacjenta który ma co najmniej jedną wizytę (MongoDB)."""
+        if self._cached_mongo_pids is None:
+            docs = list(
+                db.patients.find(
+                    {"visits.0": {"$exists": True}}, {"_id": 1}
+                ).limit(2000).sort("_id", 1)
+            )
+            self._cached_mongo_pids = (
+                [d["_id"] for d in docs] if docs else list(range(1, 11))
+            )
+        return random.choice(self._cached_mongo_pids)
 
     @staticmethod
     def _avg_time(func, runs: int = RUNS) -> float:
@@ -57,7 +92,7 @@ class BenchmarkEngine:
         return sum(times) / len(times)
 
     def _record(self, db_name: str, op: str, scenario: str, avg: float):
-        self.results.append((db_name, self.scale, op, scenario, avg))
+        self.results.append((db_name, self.scale, self.is_indexed, op, scenario, avg))
 
     # ═══════════════════════════════════════════════════════════════════
     #  Publiczne API
@@ -67,7 +102,9 @@ class BenchmarkEngine:
         self, is_indexed: bool, progress_callback: ProgressCallback = None
     ):
         _ensure_results_dir()
+        self.is_indexed = is_indexed
         self.results = []
+        self._cached_mongo_pids = None  # reset cache dla nowego runu
 
         def _report(msg):
             if progress_callback:
@@ -86,7 +123,7 @@ class BenchmarkEngine:
                 else:
                     runner()
             except Exception as e:
-                _report(f"   BŁĄD {db_type.value}: {e}")
+                _report(f"   BLAD {db_type.value}: {e}")
 
         filename = RESULTS_FILE_INDEXED if is_indexed else RESULTS_FILE_NO_INDEX
         self._save_results(filename)
@@ -107,23 +144,23 @@ class BenchmarkEngine:
             f.write(f"  RAPORT EXPLAIN / QUERY PLAN   (Skala: {self.scale})\n")
             f.write(f"{'='*70}\n\n")
 
-            SEP = '-' * 70
+            SEP = "-" * 70
 
             queries_pg = [
                 (
-                    "SELECT z JOINem – wizyty pacjenta z danymi lekarza",
+                    "SELECT z JOINem - wizyty pacjenta z danymi lekarza",
                     "EXPLAIN ANALYZE SELECT v.id, v.visit_date, v.status, d.first_name, d.last_name "
                     "FROM visits v JOIN doctors d ON v.doctor_id = d.id "
                     "WHERE v.patient_id = 1",
                 ),
                 (
-                    "SELECT z agregacją – suma kosztów usług na wizytę",
+                    "SELECT z agregacja - suma kosztow uslug na wizyte",
                     "EXPLAIN ANALYZE SELECT v.id, SUM(ps.final_price) AS total "
                     "FROM visits v JOIN performed_services ps ON ps.visit_id = v.id "
                     "WHERE v.patient_id = 1 GROUP BY v.id",
                 ),
                 (
-                    "SELECT z wieloma JOINami – pełna historia pacjenta",
+                    "SELECT z wieloma JOINami - pelna historia pacjenta",
                     "EXPLAIN ANALYZE SELECT p.first_name, p.last_name, v.visit_date, "
                     "dg.diagnosis_type, ds.name AS disease "
                     "FROM patients p "
@@ -138,7 +175,6 @@ class BenchmarkEngine:
                 ),
             ]
 
-            # PostgreSQL EXPLAIN
             f.write(f"\n{SEP}\n  PostgreSQL\n{SEP}\n")
             try:
                 pg = self.cm.get_connector(DatabaseType.POSTGRES).get_connection()
@@ -150,12 +186,11 @@ class BenchmarkEngine:
                         for row in cur.fetchall():
                             f.write(f"  {row[0]}\n")
                     except Exception as e:
-                        f.write(f"  BŁĄD: {e}\n")
+                        f.write(f"  BLAD: {e}\n")
                 cur.close()
             except Exception as e:
-                f.write(f"  Nie można połączyć: {e}\n")
+                f.write(f"  Nie mozna polaczyc: {e}\n")
 
-            # MySQL EXPLAIN
             f.write(f"\n{SEP}\n  MySQL\n{SEP}\n")
             try:
                 my = self.cm.get_connector(DatabaseType.MYSQL).get_connection()
@@ -171,40 +206,35 @@ class BenchmarkEngine:
                             parsed = json.loads(row[0])
                             f.write(f"  {json.dumps(parsed, indent=2)}\n")
                     except Exception as e:
-                        f.write(f"  BŁĄD: {e}\n")
+                        f.write(f"  BLAD: {e}\n")
                 cur.close()
             except Exception as e:
-                f.write(f"  Nie można połączyć: {e}\n")
+                f.write(f"  Nie mozna polaczyc: {e}\n")
 
-            # MongoDB EXPLAIN
             f.write(f"\n{SEP}\n  MongoDB\n{SEP}\n")
             try:
                 db = self.cm.get_connector(DatabaseType.MONGODB).get_db()
-
                 mongo_queries = [
+                    ("find po _id", {"find": "patients", "filter": {"_id": 1}}),
                     (
-                        "find po _id",
-                        {"find": "patients", "filter": {"_id": 1}},
-                    ),
-                    (
-                        "find po statusie wizyty (zagnieżdżenie)",
+                        "find po statusie wizyty (zagniezdzone)",
                         {"find": "patients", "filter": {"visits.status": "completed"}},
                     ),
                     (
-                        "find po nazwisku z projekcją",
+                        "find po nazwisku z projekcja",
                         {
                             "find": "patients",
                             "filter": {"last_name": "Kowalski"},
-                            "projection": {"first_name": 1, "last_name": 1, "visits.visit_date": 1},
+                            "projection": {
+                                "first_name": 1, "last_name": 1, "visits.visit_date": 1,
+                            },
                         },
                     ),
                 ]
                 for title, cmd in mongo_queries:
                     f.write(f"\n> {title}\n  Zapytanie: {cmd}\n\n")
                     try:
-                        plan = db.command(
-                            "explain", cmd, verbosity="executionStats"
-                        )
+                        plan = db.command("explain", cmd, verbosity="executionStats")
                         stats = plan.get("executionStats", {})
                         f.write(f"  executionSuccess: {stats.get('executionSuccess')}\n")
                         f.write(f"  nReturned: {stats.get('nReturned')}\n")
@@ -214,13 +244,17 @@ class BenchmarkEngine:
                         stage = stats.get("executionStages", stats.get("inputStage", {}))
                         f.write(f"  stage: {stage.get('stage', 'N/A')}\n")
                     except Exception as e:
-                        f.write(f"  BŁĄD: {e}\n")
+                        f.write(f"  BLAD: {e}\n")
             except Exception as e:
-                f.write(f"  Nie można połączyć: {e}\n")
+                f.write(f"  Nie mozna polaczyc: {e}\n")
 
             f.write(f"\n{SEP}\n  Redis\n{SEP}\n")
-            f.write("  Redis jest bazą klucz-wartość i nie posiada mechanizmu EXPLAIN.\n")
-            f.write("  Złożoność operacji: GET/SET → O(1), HGETALL → O(N), SCAN → O(N).\n")
+            f.write(
+                "  Redis jest baza klucz-wartosc i nie posiada mechanizmu EXPLAIN.\n"
+                "  Zlozonosc operacji: GET/SET -> O(1), HGETALL -> O(N pól w hashu),\n"
+                "  LRANGE -> O(S+N), MGET -> O(N kluczy).\n"
+                "  Redis operuje wylacznie w pamieci RAM – brak dostepu do dysku.\n"
+            )
 
         _report(f"Raport EXPLAIN -> {EXPLAIN_FILE}")
 
@@ -236,13 +270,13 @@ class BenchmarkEngine:
             avg = self._avg_time(func)
             self._record(db_name, op, name, avg)
 
-        # ── CREATE (6 scenariuszy) ──────────────────────────────────
+        # ── CREATE (6 scenariuszy) ─────────────────────────────────────
 
         def c1():
             cur = conn.cursor()
             pid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO patients (id, national_id, first_name, last_name, birth_date, gender) "
+                "INSERT INTO patients (id,national_id,first_name,last_name,birth_date,gender) "
                 "VALUES (%s,%s,%s,%s,%s,%s)",
                 (pid, "99999999999", "TestName", "TestSurname", "2000-01-01", "M"),
             )
@@ -255,9 +289,10 @@ class BenchmarkEngine:
             cur = conn.cursor()
             vid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO visits (id, patient_id, doctor_id, visit_date, status) "
+                "INSERT INTO visits (id,patient_id,doctor_id,visit_date,status) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                (vid, self._rid(self.max_patient), self._rid(self.max_doctor), "2025-06-01", "scheduled"),
+                (vid, self._rid(self.max_patient), self._rid(self.max_doctor),
+                 "2025-06-01", "scheduled"),
             )
             cur.execute("DELETE FROM visits WHERE id=%s", (vid,))
             cur.close()
@@ -268,9 +303,10 @@ class BenchmarkEngine:
             cur = conn.cursor()
             did = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO diagnoses (id, visit_id, disease_id, diagnosis_type, notes) "
+                "INSERT INTO diagnoses (id,visit_id,disease_id,diagnosis_type,notes) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                (did, self._rid(self.max_visit), self._rid(self.max_disease), "primary", "bench note"),
+                (did, self._rid(self.max_visit), self._rid(self.max_disease),
+                 "primary", "bench note"),
             )
             cur.execute("DELETE FROM diagnoses WHERE id=%s", (did,))
             cur.close()
@@ -282,12 +318,12 @@ class BenchmarkEngine:
             pid = random.randint(10_000_000, 99_999_999)
             iid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO prescriptions (id, visit_id, prescription_code, issue_date) "
+                "INSERT INTO prescriptions (id,visit_id,prescription_code,issue_date) "
                 "VALUES (%s,%s,%s,%s)",
                 (pid, self._rid(self.max_visit), "RX-BENCH", "2025-06-01"),
             )
             cur.execute(
-                "INSERT INTO prescription_items (id, prescription_id, medication_id, dosage) "
+                "INSERT INTO prescription_items (id,prescription_id,medication_id,dosage) "
                 "VALUES (%s,%s,%s,%s)",
                 (iid, pid, self._rid(self.max_medication), "1x500mg"),
             )
@@ -301,7 +337,7 @@ class BenchmarkEngine:
             cur = conn.cursor()
             sid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO performed_services (id, visit_id, service_id, quantity, final_price) "
+                "INSERT INTO performed_services (id,visit_id,service_id,quantity,final_price) "
                 "VALUES (%s,%s,%s,%s,%s)",
                 (sid, self._rid(self.max_visit), self._rid(self.max_service), 1, 199.99),
             )
@@ -314,7 +350,7 @@ class BenchmarkEngine:
             cur = conn.cursor()
             tid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO test_results (id, visit_id, parameter_name, result_value, unit, min_norm, max_norm) "
+                "INSERT INTO test_results (id,visit_id,parameter_name,result_value,unit,min_norm,max_norm) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (tid, self._rid(self.max_visit), "Hemoglobina", 13.5, "g/dL", 12.0, 16.0),
             )
@@ -323,11 +359,12 @@ class BenchmarkEngine:
 
         _run("CREATE", "insert_test_result", c6)
 
-        # ── READ (6 scenariuszy) ────────────────────────────────────
+        # ── READ (6 scenariuszy) ───────────────────────────────────────
 
         def r1():
             cur = conn.cursor()
-            cur.execute("SELECT * FROM patients WHERE id = %s", (self._rid(self.max_patient),))
+            cur.execute("SELECT * FROM patients WHERE id = %s",
+                        (self._rid(self.max_patient),))
             cur.fetchall()
             cur.close()
 
@@ -406,76 +443,64 @@ class BenchmarkEngine:
 
         _run("READ", "select_prescriptions_with_meds", r6)
 
-        # ── UPDATE (6 scenariuszy) ──────────────────────────────────
+        # ── UPDATE (6 scenariuszy) ─────────────────────────────────────
 
         def u1():
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE patients SET last_name = %s WHERE id = %s",
-                ("NazwiskoBench", self._rid(self.max_patient)),
-            )
+            cur.execute("UPDATE patients SET last_name = %s WHERE id = %s",
+                        ("NazwiskoBench", self._rid(self.max_patient)))
             cur.close()
 
         _run("UPDATE", "update_patient_name", u1)
 
         def u2():
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE visits SET status = %s WHERE id = %s",
-                ("completed", self._rid(self.max_visit)),
-            )
+            cur.execute("UPDATE visits SET status = %s WHERE id = %s",
+                        ("completed", self._rid(self.max_visit)))
             cur.close()
 
         _run("UPDATE", "update_visit_status", u2)
 
         def u3():
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE performed_services SET final_price = %s WHERE visit_id = %s",
-                (999.99, self._rid(self.max_visit)),
-            )
+            cur.execute("UPDATE performed_services SET final_price = %s WHERE visit_id = %s",
+                        (999.99, self._rid(self.max_visit)))
             cur.close()
 
         _run("UPDATE", "update_service_price", u3)
 
         def u4():
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE diagnoses SET notes = %s WHERE visit_id = %s",
-                ("Zaktualizowana notatka benchmarku", self._rid(self.max_visit)),
-            )
+            cur.execute("UPDATE diagnoses SET notes = %s WHERE visit_id = %s",
+                        ("Zaktualizowana notatka benchmarku", self._rid(self.max_visit)))
             cur.close()
 
         _run("UPDATE", "update_diagnosis_notes", u4)
 
         def u5():
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE doctors SET license_number = %s WHERE id = %s",
-                ("NEW-LIC-7777", self._rid(self.max_doctor)),
-            )
+            cur.execute("UPDATE doctors SET license_number = %s WHERE id = %s",
+                        ("NEW-LIC-7777", self._rid(self.max_doctor)))
             cur.close()
 
         _run("UPDATE", "update_doctor_license", u5)
 
         def u6():
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE departments SET phone = %s WHERE id = %s",
-                ("+48 000 000 000", self._rid(self.max_department)),
-            )
+            cur.execute("UPDATE departments SET phone = %s WHERE id = %s",
+                        ("+48 000 000 000", self._rid(self.max_department)))
             cur.close()
 
         _run("UPDATE", "update_department_phone", u6)
 
-        # ── DELETE (6 scenariuszy) ──────────────────────────────────
-        # Każdy DELETE: INSERT tymczasowego rekordu, mierzenie czasu DELETE
+        # ── DELETE (6 scenariuszy) ─────────────────────────────────────
+        # Wzorzec: INSERT tymczasowy + DELETE – mierzone razem (spójne z innymi DB)
 
         def d1():
             cur = conn.cursor()
             tid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO test_results (id, visit_id, parameter_name, result_value, unit, min_norm, max_norm) "
+                "INSERT INTO test_results (id,visit_id,parameter_name,result_value,unit,min_norm,max_norm) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (tid, 1, "TMP", 1.0, "U", 0.0, 1.0),
             )
@@ -488,7 +513,7 @@ class BenchmarkEngine:
             cur = conn.cursor()
             did = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO diagnoses (id, visit_id, disease_id, diagnosis_type, notes) "
+                "INSERT INTO diagnoses (id,visit_id,disease_id,diagnosis_type,notes) "
                 "VALUES (%s,%s,%s,%s,%s)",
                 (did, 1, 1, "primary", "tmp"),
             )
@@ -501,7 +526,7 @@ class BenchmarkEngine:
             cur = conn.cursor()
             pid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO patients (id, national_id, first_name, last_name, birth_date, gender) "
+                "INSERT INTO patients (id,national_id,first_name,last_name,birth_date,gender) "
                 "VALUES (%s,%s,%s,%s,%s,%s)",
                 (pid, "00000000000", "Del", "Test", "2000-01-01", "M"),
             )
@@ -514,7 +539,7 @@ class BenchmarkEngine:
             cur = conn.cursor()
             sid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO performed_services (id, visit_id, service_id, quantity, final_price) "
+                "INSERT INTO performed_services (id,visit_id,service_id,quantity,final_price) "
                 "VALUES (%s,%s,%s,%s,%s)",
                 (sid, 1, 1, 1, 100.0),
             )
@@ -527,7 +552,7 @@ class BenchmarkEngine:
             cur = conn.cursor()
             rxid = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO prescriptions (id, visit_id, prescription_code, issue_date) "
+                "INSERT INTO prescriptions (id,visit_id,prescription_code,issue_date) "
                 "VALUES (%s,%s,%s,%s)",
                 (rxid, 1, "RX-DEL", "2025-01-01"),
             )
@@ -541,12 +566,12 @@ class BenchmarkEngine:
             vid = random.randint(10_000_000, 99_999_999)
             pid_tmp = random.randint(10_000_000, 99_999_999)
             cur.execute(
-                "INSERT INTO patients (id, national_id, first_name, last_name, birth_date, gender) "
+                "INSERT INTO patients (id,national_id,first_name,last_name,birth_date,gender) "
                 "VALUES (%s,%s,%s,%s,%s,%s)",
                 (pid_tmp, "00000000001", "V", "D", "2000-01-01", "F"),
             )
             cur.execute(
-                "INSERT INTO visits (id, patient_id, doctor_id, visit_date, status) "
+                "INSERT INTO visits (id,patient_id,doctor_id,visit_date,status) "
                 "VALUES (%s,%s,%s,%s,%s)",
                 (vid, pid_tmp, 1, "2025-01-01", "scheduled"),
             )
@@ -568,7 +593,7 @@ class BenchmarkEngine:
             avg = self._avg_time(func)
             self._record(db_name, op, name, avg)
 
-        # ── CREATE ──────────────────────────────────────────────────
+        # ── CREATE ────────────────────────────────────────────────────
 
         def c1():
             pid = random.randint(10_000_000, 99_999_999)
@@ -588,16 +613,19 @@ class BenchmarkEngine:
                     "doctor_id": self._rid(self.max_doctor),
                     "status": "scheduled",
                     "visit_date": "2025-06-01",
+                    "diagnoses": [], "prescriptions": [],
+                    "performed_services": [], "test_results": [],
                 }}},
             )
 
         _run("CREATE", "insert_visit", c2)
 
         def c3():
+            # Używamy max_disease zamiast hardkodowanego 100
             db.patients.update_one(
-                {"_id": self._rid(self.max_patient)},
+                {"_id": self._mongo_pid_with_visits(db)},
                 {"$push": {"visits.0.diagnoses": {
-                    "disease_id": random.randint(1, 100),
+                    "disease_id": self._rid(self.max_disease),
                     "diagnosis_type": "primary",
                     "notes": "bench",
                 }}},
@@ -607,10 +635,12 @@ class BenchmarkEngine:
 
         def c4():
             db.patients.update_one(
-                {"_id": self._rid(self.max_patient)},
+                {"_id": self._mongo_pid_with_visits(db)},
                 {"$push": {"visits.0.prescriptions": {
                     "prescription_code": "RX-NEW",
-                    "items": [{"medication_id": 1, "dosage": "1x200mg"}],
+                    "issue_date": "2025-06-01",
+                    "items": [{"medication_id": self._rid(self.max_medication),
+                               "dosage": "1x200mg"}],
                 }}},
             )
 
@@ -618,9 +648,10 @@ class BenchmarkEngine:
 
         def c5():
             db.patients.update_one(
-                {"_id": self._rid(self.max_patient)},
+                {"_id": self._mongo_pid_with_visits(db)},
                 {"$push": {"visits.0.performed_services": {
-                    "service_id": 99, "quantity": 1, "final_price": 100.0,
+                    "service_id": self._rid(self.max_service),
+                    "quantity": 1, "final_price": 100.0,
                 }}},
             )
 
@@ -628,7 +659,7 @@ class BenchmarkEngine:
 
         def c6():
             db.patients.update_one(
-                {"_id": self._rid(self.max_patient)},
+                {"_id": self._mongo_pid_with_visits(db)},
                 {"$push": {"visits.0.test_results": {
                     "parameter_name": "Glukoza", "result_value": 90.0,
                     "unit": "mg/dL", "min_norm": 70.0, "max_norm": 110.0,
@@ -637,7 +668,7 @@ class BenchmarkEngine:
 
         _run("CREATE", "insert_test_result", c6)
 
-        # ── READ ────────────────────────────────────────────────────
+        # ── READ ──────────────────────────────────────────────────────
 
         _run("READ", "select_patient_by_id",
              lambda: db.patients.find_one({"_id": self._rid(self.max_patient)}))
@@ -645,19 +676,30 @@ class BenchmarkEngine:
         _run("READ", "select_visits_with_doctor",
              lambda: list(db.patients.find(
                  {"visits.doctor_id": self._rid(self.max_doctor)},
-                 {"first_name": 1, "last_name": 1, "visits.$": 1}
+                 {"first_name": 1, "last_name": 1, "visits.$": 1},
              ).limit(50)))
 
-        _run("READ", "select_visit_diagnoses",
-             lambda: list(db.patients.find(
-                 {"visits.status": "completed"}
-             ).limit(10)))
+        def r3_mongo():
+            pid = self._mongo_pid_with_visits(db)
+            return list(db.patients.aggregate([
+                {"$match": {"_id": pid}},
+                {"$unwind": "$visits"},
+                {"$unwind": "$visits.diagnoses"},
+                {"$project": {
+                    "visit_date": "$visits.visit_date",
+                    "diagnosis_type": "$visits.diagnoses.diagnosis_type",
+                    "disease_id": "$visits.diagnoses.disease_id",
+                    "notes": "$visits.diagnoses.notes",
+                }},
+            ]))
+
+        _run("READ", "select_visit_diagnoses", r3_mongo)
 
         _run("READ", "select_patient_full_history",
              lambda: db.patients.find_one(
                  {"_id": self._rid(self.max_patient)},
                  {"visits.performed_services": 1, "visits.diagnoses": 1,
-                  "visits.visit_date": 1, "first_name": 1, "last_name": 1}
+                  "visits.visit_date": 1, "first_name": 1, "last_name": 1},
              ))
 
         def r5():
@@ -665,10 +707,8 @@ class BenchmarkEngine:
                 {"$match": {"_id": self._rid(self.max_patient)}},
                 {"$unwind": "$visits"},
                 {"$unwind": "$visits.performed_services"},
-                {"$group": {
-                    "_id": "$_id",
-                    "total": {"$sum": "$visits.performed_services.final_price"},
-                }},
+                {"$group": {"_id": "$_id",
+                            "total": {"$sum": "$visits.performed_services.final_price"}}},
             ]
             list(db.patients.aggregate(pipeline))
 
@@ -676,70 +716,80 @@ class BenchmarkEngine:
 
         _run("READ", "select_prescriptions_with_meds",
              lambda: db.patients.find_one(
-                 {"visits.prescriptions.prescription_code": {"$exists": True},
-                  "_id": self._rid(self.max_patient)},
-                 {"visits.prescriptions": 1}
+                 {"_id": self._rid(self.max_patient),
+                  "visits.prescriptions.prescription_code": {"$exists": True}},
+                 {"visits.prescriptions": 1},
              ))
 
-        # ── UPDATE ──────────────────────────────────────────────────
+        # ── UPDATE ────────────────────────────────────────────────────
 
         _run("UPDATE", "update_patient_name",
              lambda: db.patients.update_one(
                  {"_id": self._rid(self.max_patient)},
-                 {"$set": {"last_name": "NazwiskoMongo"}}
+                 {"$set": {"last_name": "NazwiskoMongo"}},
              ))
 
         _run("UPDATE", "update_visit_status",
              lambda: db.patients.update_one(
-                 {"_id": self._rid(self.max_patient)},
-                 {"$set": {"visits.0.status": "completed"}}
+                 {"_id": self._mongo_pid_with_visits(db)},
+                 {"$set": {"visits.0.status": "completed"}},
              ))
 
         _run("UPDATE", "update_service_price",
              lambda: db.patients.update_one(
-                 {"_id": self._rid(self.max_patient)},
-                 {"$set": {"visits.0.performed_services.0.final_price": 999.99}}
+                 {"_id": self._mongo_pid_with_visits(db)},
+                 {"$set": {"visits.0.performed_services.0.final_price": 999.99}},
              ))
 
         _run("UPDATE", "update_diagnosis_notes",
              lambda: db.patients.update_one(
-                 {"_id": self._rid(self.max_patient)},
-                 {"$set": {"visits.0.diagnoses.0.notes": "Zaktualizowane Mongo"}}
+                 {"_id": self._mongo_pid_with_visits(db)},
+                 {"$set": {"visits.0.diagnoses.0.notes": "Zaktualizowane Mongo"}},
              ))
 
-        _run("UPDATE", "update_doctor_license",
-             lambda: db.patients.update_many(
-                 {"visits.doctor_id": self._rid(self.max_doctor)},
-                 {"$set": {"visits.$[].doctor_id": self._rid(self.max_doctor)}}
-             ))
+        def u5():
+            pid = self._mongo_pid_with_visits(db)
+            did = self._rid(self.max_doctor)
+            db.patients.update_one(
+                {"_id": pid, "visits.doctor_id": {"$exists": True}},
+                {"$set": {"visits.0.doctor_license": f"LIC-{did}"}},
+            )
 
-        _run("UPDATE", "update_department_phone",
-             lambda: db.patients.update_many(
-                 {"_id": {"$in": [self._rid(self.max_patient) for _ in range(3)]}},
-                 {"$set": {"tag": "batch_update"}}
-             ))
+        _run("UPDATE", "update_doctor_license", u5)
 
-        # ── DELETE ──────────────────────────────────────────────────
+        def u6():
+            pid = self._mongo_pid_with_visits(db)
+            db.patients.update_one(
+                {"_id": pid},
+                {"$set": {"visits.0.department_phone": "+48 000 000 000"}},
+            )
+
+        _run("UPDATE", "update_department_phone", u6)
+
+        # ── DELETE ────────────────────────────────────────────────────
+        # Wzorzec: $push tymczasowego elementu + $pull – mierzone razem
 
         def d1():
+            pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$push": {"visits.0.test_results": {"parameter_name": "TMP_DEL"}}},
             )
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$pull": {"visits.0.test_results": {"parameter_name": "TMP_DEL"}}},
             )
 
         _run("DELETE", "delete_test_result", d1)
 
         def d2():
+            pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$push": {"visits.0.diagnoses": {"disease_id": 99999}}},
             )
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$pull": {"visits.0.diagnoses": {"disease_id": 99999}}},
             )
 
@@ -753,36 +803,39 @@ class BenchmarkEngine:
         _run("DELETE", "delete_patient", d3)
 
         def d4():
+            pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$push": {"visits.0.performed_services": {"service_id": 99999}}},
             )
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$pull": {"visits.0.performed_services": {"service_id": 99999}}},
             )
 
         _run("DELETE", "delete_performed_service", d4)
 
         def d5():
+            pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$push": {"visits.0.prescriptions": {"prescription_code": "RX-DEL"}}},
             )
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$pull": {"visits.0.prescriptions": {"prescription_code": "RX-DEL"}}},
             )
 
         _run("DELETE", "delete_prescription", d5)
 
         def d6():
+            pid = self._rid(self.max_patient)
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$push": {"visits": {"visit_id": 99999999}}},
             )
             db.patients.update_one(
-                {"_id": 1},
+                {"_id": pid},
                 {"$pull": {"visits": {"visit_id": 99999999}}},
             )
 
@@ -790,6 +843,21 @@ class BenchmarkEngine:
 
     # ═══════════════════════════════════════════════════════════════════
     #  Scenariusze Redis – 24 scenariusze
+    #
+    #  Redis jest bazą klucz-wartość i nie posiada JOINów. Scenariusze
+    #  symulują odpowiedniki logiczne operacji SQL poprzez pipeline'y
+    #  łączące odczyty z wielu kluczy (multi-key lookup).
+    #  Seedowane klucze:
+    #    patient:{id}            HASH
+    #    patient:visits:{pid}    SET  {visit_id, ...}
+    #    visit:status:{id}       STRING
+    #    visit:doctor:{vid}      STRING
+    #    session:doctor:{id}     HASH
+    #    visit:diag:{visit_id}   LIST
+    #    prescription:{id}       HASH
+    #    service:total:{vid}     HASH
+    #    test:{vid}              HASH
+    #    department:{id}         HASH
     # ═══════════════════════════════════════════════════════════════════
 
     def _redis_scenarios(self):
@@ -800,134 +868,292 @@ class BenchmarkEngine:
             avg = self._avg_time(func)
             self._record(db_name, op, name, avg)
 
-        # ── CREATE ──────────────────────────────────────────────────
+        # ── CREATE ────────────────────────────────────────────────────
+        # Wzorzec: tworzenie wielu powiązanych kluczy (jak INSERT w SQL
+        # tworzy wiersz + aktualizuje indeksy/FK), następnie cleanup.
 
-        _run("CREATE", "insert_patient",
-             lambda: r.hset(
-                 f"patient:{random.randint(10_000_000, 99_999_999)}",
-                 mapping={"name": "Test", "national_id": "000", "gender": "M"}
-             ))
+        def c1():
+            pid = random.randint(10_000_000, 99_999_999)
+            pipe = r.pipeline()
+            pipe.hset(f"patient:{pid}", mapping={
+                "first_name": "T", "last_name": "P",
+                "national_id": "000", "gender": "M",
+            })
+            pipe.sadd(f"patient:visits:{pid}", "0")
+            pipe.execute()
+            r.delete(f"patient:{pid}", f"patient:visits:{pid}")
 
-        _run("CREATE", "insert_visit",
-             lambda: r.set(
-                 f"visit:status:{random.randint(10_000_000, 99_999_999)}",
-                 "scheduled"
-             ))
+        _run("CREATE", "insert_patient", c1)
 
-        _run("CREATE", "insert_diagnosis",
-             lambda: r.lpush(
-                 f"visit:diag:{random.randint(10_000_000, 99_999_999)}",
-                 "primary:disease_1"
-             ))
+        def c2():
+            vid = random.randint(10_000_000, 99_999_999)
+            pid = self._rid(self.max_patient)
+            did = self._rid(self.max_doctor)
+            pipe = r.pipeline()
+            pipe.set(f"visit:status:{vid}", "scheduled")
+            pipe.set(f"visit:doctor:{vid}", str(did))
+            pipe.sadd(f"patient:visits:{pid}", str(vid))
+            pipe.execute()
+            pipe2 = r.pipeline()
+            pipe2.delete(f"visit:status:{vid}", f"visit:doctor:{vid}")
+            pipe2.srem(f"patient:visits:{pid}", str(vid))
+            pipe2.execute()
 
-        _run("CREATE", "insert_prescription_with_items",
-             lambda: r.hset(
-                 f"prescription:{random.randint(10_000_000, 99_999_999)}",
-                 mapping={"code": "RX-NEW", "med": "Lek_1", "dosage": "1x200mg"}
-             ))
+        _run("CREATE", "insert_visit", c2)
 
-        _run("CREATE", "insert_performed_service",
-             lambda: r.hset(
-                 f"service:{random.randint(10_000_000, 99_999_999)}",
-                 mapping={"service_id": "1", "price": "199.99", "qty": "1"}
-             ))
+        def c3():
+            vid = self._rid(self.max_visit)
+            pipe = r.pipeline()
+            pipe.rpush(f"visit:diag:{vid}", f"{self._rid(self.max_disease)}:primary:bench")
+            pipe.execute()
 
-        _run("CREATE", "insert_test_result",
-             lambda: r.hset(
-                 f"test_result:{random.randint(10_000_000, 99_999_999)}",
-                 mapping={"param": "Hemoglobina", "value": "13.5", "unit": "g/dL"}
-             ))
+        _run("CREATE", "insert_diagnosis", c3)
 
-        # ── READ ────────────────────────────────────────────────────
+        def c4():
+            rxid = random.randint(10_000_000, 99_999_999)
+            pipe = r.pipeline()
+            pipe.hset(f"prescription:{rxid}", mapping={
+                "visit_id": str(self._rid(self.max_visit)),
+                "code": "RX-NEW",
+                "issue_date": "2025-06-01",
+                "med_1": str(self._rid(self.max_medication)),
+                "dosage_1": "1x500mg",
+                "med_2": str(self._rid(self.max_medication)),
+                "dosage_2": "2x200mg",
+            })
+            pipe.execute()
+            r.delete(f"prescription:{rxid}")
+
+        _run("CREATE", "insert_prescription_with_items", c4)
+
+        def c5():
+            sid = random.randint(10_000_000, 99_999_999)
+            vid = self._rid(self.max_visit)
+            pipe = r.pipeline()
+            pipe.hset(f"service:perf:{sid}", mapping={
+                "visit_id": str(vid), "service_id": str(self._rid(self.max_service)),
+                "quantity": "1", "final_price": "199.99",
+            })
+            pipe.hincrbyfloat(f"service:total:{vid}", "total_price", 199.99)
+            pipe.execute()
+            pipe2 = r.pipeline()
+            pipe2.delete(f"service:perf:{sid}")
+            pipe2.hincrbyfloat(f"service:total:{vid}", "total_price", -199.99)
+            pipe2.execute()
+
+        _run("CREATE", "insert_performed_service", c5)
+
+        def c6():
+            tid = random.randint(10_000_000, 99_999_999)
+            r.hset(f"test:{tid}", mapping={
+                "visit_id": str(self._rid(self.max_visit)),
+                "parameter": "Hemoglobina", "value": "13.5",
+                "unit": "g/dL", "min_norm": "12.0", "max_norm": "16.0",
+            })
+            r.delete(f"test:{tid}")
+
+        _run("CREATE", "insert_test_result", c6)
+
+        # ── READ ──────────────────────────────────────────────────────
+        # Symulacja JOINów przez wielokluczowe pipeline'y.
 
         _run("READ", "select_patient_by_id",
              lambda: r.hgetall(f"patient:{self._rid(self.max_patient)}"))
 
-        _run("READ", "select_visits_with_doctor",
-             lambda: r.hgetall(f"session:doctor:{self._rid(self.max_doctor)}"))
+        def r2():
+            pid = self._rid(self.max_patient)
+            visit_ids = r.smembers(f"patient:visits:{pid}")
+            if not visit_ids:
+                return []
+            sample = list(visit_ids)[:20]
+            pipe = r.pipeline()
+            for vid in sample:
+                pipe.get(f"visit:status:{vid}")
+                pipe.get(f"visit:doctor:{vid}")
+            results = pipe.execute()
+            doctor_ids = set()
+            for i in range(1, len(results), 2):
+                if results[i]:
+                    doctor_ids.add(results[i])
+            if doctor_ids:
+                pipe2 = r.pipeline()
+                for did in list(doctor_ids)[:10]:
+                    pipe2.hgetall(f"session:doctor:{did}")
+                pipe2.execute()
 
-        _run("READ", "select_visit_diagnoses",
-             lambda: r.get(f"visit:status:{self._rid(self.max_visit)}"))
+        _run("READ", "select_visits_with_doctor", r2)
 
-        _run("READ", "select_patient_full_history",
-             lambda: r.lrange(f"visit:diag:{self._rid(self.max_visit)}", 0, -1))
+        def r3():
+            vid = self._rid(self.max_visit)
+            diagnoses = r.lrange(f"visit:diag:{vid}", 0, -1)
+            if diagnoses:
+                pipe = r.pipeline()
+                for d in diagnoses[:10]:
+                    parts = d.split(":")
+                    if parts:
+                        pipe.exists(f"disease:{parts[0]}")
+                pipe.execute()
 
-        _run("READ", "select_aggregated_costs",
-             lambda: r.mget(
-                 *[f"visit:status:{i}" for i in range(1, min(11, self.max_visit))]
-             ))
+        _run("READ", "select_visit_diagnoses", r3)
 
-        _run("READ", "select_prescriptions_with_meds",
-             lambda: r.hgetall(f"prescription:{self._rid(self.max_visit)}"))
+        def r4():
+            pid = self._rid(self.max_patient)
+            pipe = r.pipeline()
+            pipe.hgetall(f"patient:{pid}")
+            pipe.smembers(f"patient:visits:{pid}")
+            res = pipe.execute()
+            visit_ids = res[1] if res[1] else set()
+            if visit_ids:
+                sample = list(visit_ids)[:10]
+                pipe2 = r.pipeline()
+                for vid in sample:
+                    pipe2.get(f"visit:status:{vid}")
+                    pipe2.lrange(f"visit:diag:{vid}", 0, -1)
+                    pipe2.hgetall(f"service:total:{vid}")
+                pipe2.execute()
 
-        # ── UPDATE ──────────────────────────────────────────────────
+        _run("READ", "select_patient_full_history", r4)
+
+        def r5():
+            pid = self._rid(self.max_patient)
+            visit_ids = r.smembers(f"patient:visits:{pid}")
+            if not visit_ids:
+                return 0.0
+            pipe = r.pipeline()
+            for vid in visit_ids:
+                pipe.hgetall(f"service:total:{vid}")
+            results = pipe.execute()
+            total = 0.0
+            for h in results:
+                if h and "total_price" in h:
+                    try:
+                        total += float(h["total_price"])
+                    except (ValueError, TypeError):
+                        pass
+            return total
+
+        _run("READ", "select_aggregated_costs", r5)
+
+        def r6():
+            pid = self._rid(self.max_patient)
+            visit_ids = r.smembers(f"patient:visits:{pid}")
+            if not visit_ids:
+                return
+            sample = list(visit_ids)[:10]
+            pipe = r.pipeline()
+            for vid in sample:
+                pipe.get(f"visit:status:{vid}")
+            statuses = pipe.execute()
+            pipe2 = r.pipeline()
+            for i, vid in enumerate(sample):
+                pipe2.hgetall(f"prescription:{vid}")
+            pipe2.execute()
+
+        _run("READ", "select_prescriptions_with_meds", r6)
+
+        # ── UPDATE ────────────────────────────────────────────────────
 
         _run("UPDATE", "update_patient_name",
-             lambda: r.hset(
-                 f"patient:{self._rid(self.max_patient)}", "name", "Updated"
-             ))
+             lambda: r.hset(f"patient:{self._rid(self.max_patient)}",
+                            "last_name", "Updated"))
 
         _run("UPDATE", "update_visit_status",
-             lambda: r.set(
-                 f"visit:status:{self._rid(self.max_visit)}", "cancelled"
-             ))
+             lambda: r.set(f"visit:status:{self._rid(self.max_visit)}", "cancelled"))
 
-        _run("UPDATE", "update_service_price",
-             lambda: r.hset(
-                 f"service:{self._rid(self.max_visit)}", "price", "999.99"
-             ))
+        def u3():
+            vid = self._rid(self.max_visit)
+            pipe = r.pipeline()
+            pipe.hset(f"service:total:{vid}", "total_price", "999.99")
+            pipe.execute()
 
-        _run("UPDATE", "update_diagnosis_notes",
-             lambda: r.append(
-                 f"visit:status:{self._rid(self.max_visit)}", "_upd"
-             ))
+        _run("UPDATE", "update_service_price", u3)
+
+        def u4():
+            vid = self._rid(self.max_visit)
+            k = f"visit:diag:{vid}"
+            length = r.llen(k)
+            if length > 0:
+                r.lset(k, 0, f"{self._rid(self.max_disease)}:updated")
+            else:
+                r.rpush(k, f"{self._rid(self.max_disease)}:primary")
+
+        _run("UPDATE", "update_diagnosis_notes", u4)
 
         _run("UPDATE", "update_doctor_license",
-             lambda: r.hset(
-                 f"session:doctor:{self._rid(self.max_doctor)}", "license_number", "NEW"
-             ))
+             lambda: r.hset(f"session:doctor:{self._rid(self.max_doctor)}",
+                            "license_number", "NEW-LIC"))
 
         _run("UPDATE", "update_department_phone",
-             lambda: r.hset(
-                 f"session:doctor:{self._rid(self.max_doctor)}", "status", "active"
-             ))
+             lambda: r.hset(f"department:{self._rid(self.max_department)}",
+                            "phone", "+48 000 000 000"))
 
-        # ── DELETE ──────────────────────────────────────────────────
+        # ── DELETE ────────────────────────────────────────────────────
+        # Wzorzec: INSERT tmp + DELETE – pomiar cyklu życia klucza.
 
-        def _del(key_prefix: str, setup, delete):
-            k = f"{key_prefix}:{random.randint(10_000_000, 99_999_999)}"
-            setup(k)
-            delete(k)
+        def d1():
+            tid = random.randint(10_000_000, 99_999_999)
+            r.hset(f"test:{tid}", mapping={
+                "parameter": "Hemo", "value": "13.5", "unit": "g/dL",
+                "min_norm": "12.0", "max_norm": "16.0",
+            })
+            r.delete(f"test:{tid}")
 
-        _run("DELETE", "delete_test_result",
-             lambda: _del("tmp:tr",
-                          lambda k: r.hset(k, "p", "v"),
-                          lambda k: r.delete(k)))
+        _run("DELETE", "delete_test_result", d1)
 
-        _run("DELETE", "delete_diagnosis",
-             lambda: _del("tmp:dg",
-                          lambda k: r.lpush(k, "x"),
-                          lambda k: r.delete(k)))
+        def d2():
+            vid = self._rid(self.max_visit)
+            r.rpush(f"visit:diag:{vid}", "99999:primary:tmp")
+            r.lrem(f"visit:diag:{vid}", 1, "99999:primary:tmp")
 
-        _run("DELETE", "delete_patient",
-             lambda: _del("tmp:pat",
-                          lambda k: r.hset(k, mapping={"n": "T"}),
-                          lambda k: r.delete(k)))
+        _run("DELETE", "delete_diagnosis", d2)
 
-        _run("DELETE", "delete_performed_service",
-             lambda: _del("tmp:ps",
-                          lambda k: r.hset(k, "s", "1"),
-                          lambda k: r.delete(k)))
+        def d3():
+            pid = random.randint(10_000_000, 99_999_999)
+            pipe = r.pipeline()
+            pipe.hset(f"patient:{pid}", mapping={
+                "first_name": "T", "last_name": "P", "gender": "M",
+                "national_id": "000",
+            })
+            pipe.sadd(f"patient:visits:{pid}", "0")
+            pipe.execute()
+            r.delete(f"patient:{pid}", f"patient:visits:{pid}")
 
-        _run("DELETE", "delete_prescription",
-             lambda: _del("tmp:rx",
-                          lambda k: r.set(k, "RX"),
-                          lambda k: r.delete(k)))
+        _run("DELETE", "delete_patient", d3)
 
-        _run("DELETE", "delete_visit_cascade",
-             lambda: _del("tmp:vis",
-                          lambda k: r.set(k, "scheduled"),
-                          lambda k: r.delete(k)))
+        def d4():
+            sid = random.randint(10_000_000, 99_999_999)
+            r.hset(f"service:perf:{sid}", mapping={
+                "total_price": "100.0", "visit_id": "1",
+            })
+            r.delete(f"service:perf:{sid}")
+
+        _run("DELETE", "delete_performed_service", d4)
+
+        def d5():
+            rxid = random.randint(10_000_000, 99_999_999)
+            r.hset(f"prescription:{rxid}", mapping={
+                "code": "RX-DEL", "visit_id": "1",
+                "med_1": "10", "dosage_1": "1x100mg",
+            })
+            r.delete(f"prescription:{rxid}")
+
+        _run("DELETE", "delete_prescription", d5)
+
+        def d6():
+            vid = random.randint(10_000_000, 99_999_999)
+            pid = random.randint(10_000_000, 99_999_999)
+            pipe = r.pipeline()
+            pipe.hset(f"patient:{pid}", mapping={"first_name": "V", "gender": "F"})
+            pipe.set(f"visit:status:{vid}", "scheduled")
+            pipe.set(f"visit:doctor:{vid}", "1")
+            pipe.sadd(f"patient:visits:{pid}", str(vid))
+            pipe.execute()
+            r.delete(
+                f"patient:{pid}", f"visit:status:{vid}",
+                f"visit:doctor:{vid}", f"patient:visits:{pid}",
+            )
+
+        _run("DELETE", "delete_visit_cascade", d6)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Zapis wyników
@@ -936,9 +1162,6 @@ class BenchmarkEngine:
     def _save_results(self, filename: str):
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "Database", "Scale", "Operation_Type",
-                "Scenario_Name", "Average_Time_Seconds",
-            ])
+            writer.writerow(CSV_HEADER)
             for row in self.results:
                 writer.writerow(row)

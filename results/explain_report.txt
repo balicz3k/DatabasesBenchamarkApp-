@@ -1,5 +1,5 @@
 ======================================================================
-  RAPORT EXPLAIN / QUERY PLAN   (Skala: 500000)
+  RAPORT EXPLAIN / QUERY PLAN   (Skala: 1000000)
 ======================================================================
 
 
@@ -7,83 +7,83 @@
   PostgreSQL
 ----------------------------------------------------------------------
 
-> SELECT z JOINem – wizyty pacjenta z danymi lekarza
+> SELECT z JOINem - wizyty pacjenta z danymi lekarza
   Zapytanie: SELECT v.id, v.visit_date, v.status, d.first_name, d.last_name FROM visits v JOIN doctors d ON v.doctor_id = d.id WHERE v.patient_id = 1
 
-  Hash Join  (cost=17.51..59.87 rows=11 width=33) (actual time=0.128..0.140 rows=7 loops=1)
+  Hash Join  (cost=20.78..75.16 rows=14 width=34) (actual time=0.169..0.223 rows=12 loops=1)
     Hash Cond: (v.doctor_id = d.id)
-    ->  Bitmap Heap Scan on visits v  (cost=4.51..46.84 rows=11 width=22) (actual time=0.049..0.060 rows=7 loops=1)
+    ->  Bitmap Heap Scan on visits v  (cost=4.53..58.88 rows=14 width=22) (actual time=0.031..0.081 rows=12 loops=1)
           Recheck Cond: (patient_id = 1)
-          Heap Blocks: exact=7
-          ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.50 rows=11 width=0) (actual time=0.045..0.045 rows=7 loops=1)
+          Heap Blocks: exact=12
+          ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.53 rows=14 width=0) (actual time=0.014..0.014 rows=12 loops=1)
                 Index Cond: (patient_id = 1)
-    ->  Hash  (cost=8.00..8.00 rows=400 width=19) (actual time=0.073..0.074 rows=400 loops=1)
-          Buckets: 1024  Batches: 1  Memory Usage: 29kB
-          ->  Seq Scan on doctors d  (cost=0.00..8.00 rows=400 width=19) (actual time=0.005..0.041 rows=400 loops=1)
-  Planning Time: 0.180 ms
-  Execution Time: 0.159 ms
+    ->  Hash  (cost=10.00..10.00 rows=500 width=20) (actual time=0.133..0.133 rows=500 loops=1)
+          Buckets: 1024  Batches: 1  Memory Usage: 35kB
+          ->  Seq Scan on doctors d  (cost=0.00..10.00 rows=500 width=20) (actual time=0.005..0.055 rows=500 loops=1)
+  Planning Time: 0.188 ms
+  Execution Time: 0.241 ms
 
-> SELECT z agregacją – suma kosztów usług na wizytę
+> SELECT z agregacja - suma kosztow uslug na wizyte
   Zapytanie: SELECT v.id, SUM(ps.final_price) AS total FROM visits v JOIN performed_services ps ON ps.visit_id = v.id WHERE v.patient_id = 1 GROUP BY v.id
 
-  GroupAggregate  (cost=140.28..140.50 rows=11 width=36) (actual time=0.076..0.080 rows=7 loops=1)
+  GroupAggregate  (cost=177.86..178.14 rows=14 width=36) (actual time=0.120..0.127 rows=10 loops=1)
     Group Key: v.id
-    ->  Sort  (cost=140.28..140.31 rows=11 width=10) (actual time=0.071..0.072 rows=10 loops=1)
+    ->  Sort  (cost=177.86..177.90 rows=14 width=10) (actual time=0.113..0.115 rows=14 loops=1)
           Sort Key: v.id
           Sort Method: quicksort  Memory: 25kB
-          ->  Nested Loop  (cost=4.93..140.09 rows=11 width=10) (actual time=0.022..0.066 rows=10 loops=1)
-                ->  Bitmap Heap Scan on visits v  (cost=4.51..46.84 rows=11 width=4) (actual time=0.009..0.013 rows=7 loops=1)
+          ->  Nested Loop  (cost=4.96..177.60 rows=14 width=10) (actual time=0.019..0.109 rows=14 loops=1)
+                ->  Bitmap Heap Scan on visits v  (cost=4.53..58.88 rows=14 width=4) (actual time=0.005..0.011 rows=12 loops=1)
                       Recheck Cond: (patient_id = 1)
-                      Heap Blocks: exact=7
-                      ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.50 rows=11 width=0) (actual time=0.006..0.007 rows=7 loops=1)
+                      Heap Blocks: exact=12
+                      ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.53 rows=14 width=0) (actual time=0.003..0.003 rows=12 loops=1)
                             Index Cond: (patient_id = 1)
-                ->  Index Scan using idx_performed_services_visit_id on performed_services ps  (cost=0.42..8.46 rows=2 width=10) (actual time=0.007..0.007 rows=1 loops=7)
+                ->  Index Scan using idx_performed_services_visit_id on performed_services ps  (cost=0.42..8.46 rows=2 width=10) (actual time=0.008..0.008 rows=1 loops=12)
                       Index Cond: (visit_id = v.id)
-  Planning Time: 0.146 ms
-  Execution Time: 0.100 ms
+  Planning Time: 0.117 ms
+  Execution Time: 0.142 ms
 
-> SELECT z wieloma JOINami – pełna historia pacjenta
+> SELECT z wieloma JOINami - pelna historia pacjenta
   Zapytanie: SELECT p.first_name, p.last_name, v.visit_date, dg.diagnosis_type, ds.name AS disease FROM patients p JOIN visits v ON v.patient_id = p.id JOIN diagnoses dg ON dg.visit_id = v.id JOIN diseases ds ON ds.id = dg.disease_id WHERE p.id = 1
 
-  Nested Loop  (cost=5.50..151.73 rows=11 width=48) (actual time=0.065..0.127 rows=8 loops=1)
-    ->  Nested Loop  (cost=5.22..148.51 rows=11 width=31) (actual time=0.060..0.109 rows=8 loops=1)
-          ->  Nested Loop  (cost=4.80..55.26 rows=11 width=22) (actual time=0.046..0.050 rows=7 loops=1)
-                ->  Index Scan using patients_pkey on patients p  (cost=0.29..8.31 rows=1 width=18) (actual time=0.038..0.038 rows=1 loops=1)
+  Nested Loop  (cost=5.52..190.11 rows=14 width=55) (actual time=0.030..0.141 rows=19 loops=1)
+    ->  Nested Loop  (cost=5.25..186.05 rows=14 width=33) (actual time=0.027..0.121 rows=19 loops=1)
+          ->  Nested Loop  (cost=4.83..67.33 rows=14 width=24) (actual time=0.016..0.023 rows=12 loops=1)
+                ->  Index Scan using patients_pkey on patients p  (cost=0.29..8.31 rows=1 width=20) (actual time=0.009..0.010 rows=1 loops=1)
                       Index Cond: (id = 1)
-                ->  Bitmap Heap Scan on visits v  (cost=4.51..46.84 rows=11 width=12) (actual time=0.005..0.008 rows=7 loops=1)
+                ->  Bitmap Heap Scan on visits v  (cost=4.53..58.88 rows=14 width=12) (actual time=0.005..0.010 rows=12 loops=1)
                       Recheck Cond: (patient_id = 1)
-                      Heap Blocks: exact=7
-                      ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.50 rows=11 width=0) (actual time=0.003..0.004 rows=7 loops=1)
+                      Heap Blocks: exact=12
+                      ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.53 rows=14 width=0) (actual time=0.003..0.003 rows=12 loops=1)
                             Index Cond: (patient_id = 1)
-          ->  Index Scan using idx_diagnoses_visit_id on diagnoses dg  (cost=0.42..8.46 rows=2 width=17) (actual time=0.008..0.008 rows=1 loops=7)
+          ->  Index Scan using idx_diagnoses_visit_id on diagnoses dg  (cost=0.42..8.46 rows=2 width=17) (actual time=0.008..0.008 rows=2 loops=12)
                 Index Cond: (visit_id = v.id)
-    ->  Index Scan using diseases_pkey on diseases ds  (cost=0.28..0.29 rows=1 width=25) (actual time=0.002..0.002 rows=1 loops=8)
+    ->  Index Scan using diseases_pkey on diseases ds  (cost=0.27..0.29 rows=1 width=30) (actual time=0.001..0.001 rows=1 loops=19)
           Index Cond: (id = dg.disease_id)
-  Planning Time: 0.199 ms
-  Execution Time: 0.141 ms
+  Planning Time: 0.210 ms
+  Execution Time: 0.154 ms
 
 > SELECT z filtrowaniem po statusie
   Zapytanie: SELECT * FROM visits WHERE status = 'completed' LIMIT 100
 
-  Limit  (cost=0.00..7.99 rows=100 width=26) (actual time=0.005..0.033 rows=100 loops=1)
-    ->  Seq Scan on visits  (cost=0.00..9927.00 rows=124200 width=26) (actual time=0.005..0.028 rows=100 loops=1)
+  Limit  (cost=0.00..7.93 rows=100 width=26) (actual time=0.005..0.038 rows=100 loops=1)
+    ->  Seq Scan on visits  (cost=0.00..19853.00 rows=250233 width=26) (actual time=0.005..0.032 rows=100 loops=1)
           Filter: ((status)::text = 'completed'::text)
-          Rows Removed by Filter: 271
-  Planning Time: 0.042 ms
-  Execution Time: 0.040 ms
+          Rows Removed by Filter: 296
+  Planning Time: 0.025 ms
+  Execution Time: 0.044 ms
 
 ----------------------------------------------------------------------
   MySQL
 ----------------------------------------------------------------------
 
-> SELECT z JOINem – wizyty pacjenta z danymi lekarza
+> SELECT z JOINem - wizyty pacjenta z danymi lekarza
   Zapytanie: SELECT v.id, v.visit_date, v.status, d.first_name, d.last_name FROM visits v JOIN doctors d ON v.doctor_id = d.id WHERE v.patient_id = 1
 
   {
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "4.90"
+      "query_cost": "8.40"
     },
     "nested_loop": [
       {
@@ -102,14 +102,14 @@
           "ref": [
             "const"
           ],
-          "rows_examined_per_scan": 7,
-          "rows_produced_per_join": 7,
+          "rows_examined_per_scan": 12,
+          "rows_produced_per_join": 12,
           "filtered": "100.00",
           "cost_info": {
-            "read_cost": "1.75",
-            "eval_cost": "0.70",
-            "prefix_cost": "2.45",
-            "data_read_per_join": "728"
+            "read_cost": "3.00",
+            "eval_cost": "1.20",
+            "prefix_cost": "4.20",
+            "data_read_per_join": "1K"
           },
           "used_columns": [
             "id",
@@ -137,13 +137,13 @@
             "hospital_db.v.doctor_id"
           ],
           "rows_examined_per_scan": 1,
-          "rows_produced_per_join": 7,
+          "rows_produced_per_join": 12,
           "filtered": "100.00",
           "cost_info": {
-            "read_cost": "1.75",
-            "eval_cost": "0.70",
-            "prefix_cost": "4.90",
-            "data_read_per_join": "3K"
+            "read_cost": "3.00",
+            "eval_cost": "1.20",
+            "prefix_cost": "8.40",
+            "data_read_per_join": "5K"
           },
           "used_columns": [
             "id",
@@ -156,14 +156,14 @@
   }
 }
 
-> SELECT z agregacją – suma kosztów usług na wizytę
+> SELECT z agregacja - suma kosztow uslug na wizyte
   Zapytanie: SELECT v.id, SUM(ps.final_price) AS total FROM visits v JOIN performed_services ps ON ps.visit_id = v.id WHERE v.patient_id = 1 GROUP BY v.id
 
   {
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "5.39"
+      "query_cost": "8.47"
     },
     "grouping_operation": {
       "using_filesort": false,
@@ -187,15 +187,15 @@
             "ref": [
               "const"
             ],
-            "rows_examined_per_scan": 7,
-            "rows_produced_per_join": 7,
+            "rows_examined_per_scan": 12,
+            "rows_produced_per_join": 12,
             "filtered": "100.00",
             "using_index": true,
             "cost_info": {
               "read_cost": "1.01",
-              "eval_cost": "0.70",
-              "prefix_cost": "1.71",
-              "data_read_per_join": "728"
+              "eval_cost": "1.20",
+              "prefix_cost": "2.21",
+              "data_read_per_join": "1K"
             },
             "used_columns": [
               "id",
@@ -219,13 +219,13 @@
               "hospital_db.v.id"
             ],
             "rows_examined_per_scan": 1,
-            "rows_produced_per_join": 10,
+            "rows_produced_per_join": 17,
             "filtered": "100.00",
             "cost_info": {
-              "read_cost": "2.63",
-              "eval_cost": "1.05",
-              "prefix_cost": "5.39",
-              "data_read_per_join": "252"
+              "read_cost": "4.47",
+              "eval_cost": "1.79",
+              "prefix_cost": "8.47",
+              "data_read_per_join": "428"
             },
             "used_columns": [
               "id",
@@ -239,14 +239,14 @@
   }
 }
 
-> SELECT z wieloma JOINami – pełna historia pacjenta
+> SELECT z wieloma JOINami - pelna historia pacjenta
   Zapytanie: SELECT p.first_name, p.last_name, v.visit_date, dg.diagnosis_type, ds.name AS disease FROM patients p JOIN visits v ON v.patient_id = p.id JOIN diagnoses dg ON dg.visit_id = v.id JOIN diseases ds ON ds.id = dg.disease_id WHERE p.id = 1
 
   {
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "9.71"
+      "query_cost": "16.79"
     },
     "nested_loop": [
       {
@@ -296,14 +296,14 @@
           "ref": [
             "const"
           ],
-          "rows_examined_per_scan": 7,
-          "rows_produced_per_join": 7,
+          "rows_examined_per_scan": 12,
+          "rows_produced_per_join": 12,
           "filtered": "100.00",
           "cost_info": {
-            "read_cost": "1.75",
-            "eval_cost": "0.70",
-            "prefix_cost": "2.45",
-            "data_read_per_join": "728"
+            "read_cost": "3.00",
+            "eval_cost": "1.20",
+            "prefix_cost": "4.20",
+            "data_read_per_join": "1K"
           },
           "used_columns": [
             "id",
@@ -329,12 +329,12 @@
             "hospital_db.v.id"
           ],
           "rows_examined_per_scan": 1,
-          "rows_produced_per_join": 10,
+          "rows_produced_per_join": 17,
           "filtered": "100.00",
           "cost_info": {
-            "read_cost": "2.59",
-            "eval_cost": "1.04",
-            "prefix_cost": "6.08",
+            "read_cost": "4.50",
+            "eval_cost": "1.80",
+            "prefix_cost": "10.49",
             "data_read_per_join": "1K"
           },
           "used_columns": [
@@ -361,13 +361,13 @@
             "hospital_db.dg.disease_id"
           ],
           "rows_examined_per_scan": 1,
-          "rows_produced_per_join": 10,
+          "rows_produced_per_join": 17,
           "filtered": "100.00",
           "cost_info": {
-            "read_cost": "2.59",
-            "eval_cost": "1.04",
-            "prefix_cost": "9.71",
-            "data_read_per_join": "4K"
+            "read_cost": "4.50",
+            "eval_cost": "1.80",
+            "prefix_cost": "16.79",
+            "data_read_per_join": "7K"
           },
           "used_columns": [
             "id",
@@ -386,7 +386,7 @@
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "25911.05"
+      "query_cost": "51161.35"
     },
     "table": {
       "table_name": "visits",
@@ -402,14 +402,14 @@
       "ref": [
         "const"
       ],
-      "rows_examined_per_scan": 247808,
-      "rows_produced_per_join": 247808,
+      "rows_examined_per_scan": 489256,
+      "rows_produced_per_join": 489256,
       "filtered": "100.00",
       "cost_info": {
-        "read_cost": "1130.25",
-        "eval_cost": "24780.80",
-        "prefix_cost": "25911.05",
-        "data_read_per_join": "24M"
+        "read_cost": "2235.75",
+        "eval_cost": "48925.60",
+        "prefix_cost": "51161.35",
+        "data_read_per_join": "48M"
       },
       "used_columns": [
         "id",
@@ -436,28 +436,30 @@
   totalDocsExamined: 1
   stage: IDHACK
 
-> find po statusie wizyty (zagnieżdżenie)
+> find po statusie wizyty (zagniezdzone)
   Zapytanie: {'find': 'patients', 'filter': {'visits.status': 'completed'}}
 
   executionSuccess: True
-  nReturned: 45903
-  executionTimeMillis: 42
-  totalKeysExamined: 45903
-  totalDocsExamined: 45903
+  nReturned: 76475
+  executionTimeMillis: 63
+  totalKeysExamined: 76475
+  totalDocsExamined: 76475
   stage: FETCH
 
-> find po nazwisku z projekcją
+> find po nazwisku z projekcja
   Zapytanie: {'find': 'patients', 'filter': {'last_name': 'Kowalski'}, 'projection': {'first_name': 1, 'last_name': 1, 'visits.visit_date': 1}}
 
   executionSuccess: True
-  nReturned: 0
-  executionTimeMillis: 0
-  totalKeysExamined: 0
-  totalDocsExamined: 0
+  nReturned: 866
+  executionTimeMillis: 3
+  totalKeysExamined: 866
+  totalDocsExamined: 866
   stage: PROJECTION_DEFAULT
 
 ----------------------------------------------------------------------
   Redis
 ----------------------------------------------------------------------
-  Redis jest bazą klucz-wartość i nie posiada mechanizmu EXPLAIN.
-  Złożoność operacji: GET/SET → O(1), HGETALL → O(N), SCAN → O(N).
+  Redis jest baza klucz-wartosc i nie posiada mechanizmu EXPLAIN.
+  Zlozonosc operacji: GET/SET -> O(1), HGETALL -> O(N pól w hashu),
+  LRANGE -> O(S+N), MGET -> O(N kluczy).
+  Redis operuje wylacznie w pamieci RAM – brak dostepu do dysku.
