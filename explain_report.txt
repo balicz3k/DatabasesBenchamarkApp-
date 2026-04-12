@@ -1,0 +1,100 @@
+=== RAPORT EXPLAIN PLAN (Skala: 10000) ===
+
+--- PostgreSQL ---
+Zapytanie: EXPLAIN ANALYZE SELECT * FROM visits v JOIN patients p ON v.patient_id = p.id WHERE p.id = 1
+Nested Loop  (cost=4.60..28.83 rows=5 width=62) (actual time=0.078..0.081 rows=2 loops=1)
+  ->  Index Scan using patients_pkey on patients p  (cost=0.28..8.29 rows=1 width=36) (actual time=0.014..0.015 rows=1 loops=1)
+        Index Cond: (id = 1)
+  ->  Bitmap Heap Scan on visits v  (cost=4.32..20.49 rows=5 width=26) (actual time=0.060..0.062 rows=2 loops=1)
+        Recheck Cond: (patient_id = 1)
+        Heap Blocks: exact=2
+        ->  Bitmap Index Scan on idx_visits_patient_id  (cost=0.00..4.32 rows=5 width=0) (actual time=0.056..0.056 rows=2 loops=1)
+              Index Cond: (patient_id = 1)
+Planning Time: 0.129 ms
+Execution Time: 0.098 ms
+
+
+--- MySQL ---
+Zapytanie: EXPLAIN FORMAT=JSON SELECT * FROM visits v JOIN patients p ON v.patient_id = p.id WHERE p.id = 1
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "0.70"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "const",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "key": "PRIMARY",
+          "used_key_parts": [
+            "id"
+          ],
+          "key_length": "4",
+          "ref": [
+            "const"
+          ],
+          "rows_examined_per_scan": 1,
+          "rows_produced_per_join": 1,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "0.00",
+            "eval_cost": "0.10",
+            "prefix_cost": "0.00",
+            "data_read_per_join": "496"
+          },
+          "used_columns": [
+            "id",
+            "national_id",
+            "first_name",
+            "last_name",
+            "birth_date",
+            "gender"
+          ]
+        }
+      },
+      {
+        "table": {
+          "table_name": "v",
+          "access_type": "ref",
+          "possible_keys": [
+            "idx_visits_patient_id"
+          ],
+          "key": "idx_visits_patient_id",
+          "used_key_parts": [
+            "patient_id"
+          ],
+          "key_length": "5",
+          "ref": [
+            "const"
+          ],
+          "rows_examined_per_scan": 2,
+          "rows_produced_per_join": 2,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "0.50",
+            "eval_cost": "0.20",
+            "prefix_cost": "0.70",
+            "data_read_per_join": "208"
+          },
+          "used_columns": [
+            "id",
+            "patient_id",
+            "doctor_id",
+            "visit_date",
+            "status"
+          ]
+        }
+      }
+    ]
+  }
+}
+
+
+--- MongoDB ---
+Zapytanie: db.patients.find({'_id': 1}).explain('executionStats')
+{'executionSuccess': True, 'nReturned': 1, 'executionTimeMillis': 0, 'totalKeysExamined': 1, 'totalDocsExamined': 1, 'executionStages': {'stage': 'IDHACK', 'nReturned': 1, 'executionTimeMillisEstimate': 0, 'works': 2, 'advanced': 1, 'needTime': 0, 'needYield': 0, 'saveState': 0, 'restoreState': 0, 'isEOF': 1, 'keysExamined': 1, 'docsExamined': 1}}

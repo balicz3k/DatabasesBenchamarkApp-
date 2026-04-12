@@ -1,0 +1,7 @@
+psycopg2-binary
+mysql-connector-python
+pymongo
+redis
+faker
+pandas
+matplotlib
