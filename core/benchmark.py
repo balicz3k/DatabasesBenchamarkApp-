@@ -34,6 +34,7 @@ RUNS = 3
 CSV_HEADER = [
     "Database", "Scale", "Indexed",
     "Operation_Type", "Scenario_Name", "Average_Time_Seconds",
+    "Median_Time_Seconds", "StdDev_Time_Seconds",
 ]
 
 ProgressCallback = Optional[Callable[[str], None]]
@@ -65,16 +66,22 @@ class BenchmarkEngine:
         # Bufor patient_id z potwierdzonymi wizytami (MongoDB)
         self._cached_mongo_pids: Optional[list] = None
 
+        # Nasionko losowości – ustawiane przez run_benchmarks dla reprodukowalności
+        self._rng_seed: Optional[int] = None
+
     def _rid(self, max_id: int) -> int:
         return random.randint(1, max(1, max_id))
 
     def _mongo_pid_with_visits(self, db) -> int:
         """Zwraca losowy _id pacjenta który ma co najmniej jedną wizytę (MongoDB)."""
         if self._cached_mongo_pids is None:
+            # Duży sample (50k) eliminuje bias przy skalach 1M+
             docs = list(
-                db.patients.find(
-                    {"visits.0": {"$exists": True}}, {"_id": 1}
-                ).limit(2000).sort("_id", 1)
+                db.patients.aggregate([
+                    {"$match": {"visits.0": {"$exists": True}}},
+                    {"$sample": {"size": 50_000}},
+                    {"$project": {"_id": 1}},
+                ])
             )
             self._cached_mongo_pids = (
                 [d["_id"] for d in docs] if docs else list(range(1, 11))
@@ -82,17 +89,80 @@ class BenchmarkEngine:
         return random.choice(self._cached_mongo_pids)
 
     @staticmethod
-    def _avg_time(func, runs: int = RUNS) -> float:
+    def _stats(times):
+        times_sorted = sorted(times)
+        n = len(times_sorted)
+        mean = sum(times_sorted) / n
+        median = (
+            times_sorted[n // 2]
+            if n % 2 == 1
+            else (times_sorted[n // 2 - 1] + times_sorted[n // 2]) / 2
+        )
+        stdev = (sum((t - mean) ** 2 for t in times_sorted) / n) ** 0.5
+        return median, mean, stdev
+
+    @staticmethod
+    def _avg_time(func, cleanup=None, runs: int = RUNS):
+        """Wykonuje runs pomiarów + 1 warmup.
+        Zwraca (median, mean, stdev).
+        Opcjonalny cleanup() wywoływany po każdym wywołaniu (poza pomiarem).
+        """
+        func()  # warm-up – nie liczony do statystyk
+        if cleanup:
+            cleanup()
         times = []
         for _ in range(runs):
             start = time.perf_counter()
             func()
             elapsed = time.perf_counter() - start
             times.append(elapsed)
-        return sum(times) / len(times)
+            if cleanup:
+                cleanup()
+        return BenchmarkEngine._stats(times)
 
-    def _record(self, db_name: str, op: str, scenario: str, avg: float):
-        self.results.append((db_name, self.scale, self.is_indexed, op, scenario, avg))
+    @staticmethod
+    def _avg_time_split(measure_fn, setup_fn=None, teardown_fn=None,
+                        runs: int = RUNS):
+        """Pomiar z oddzieleniem setup/measure/teardown.
+
+        Sekwencja per iteracja:
+          ctx = setup_fn()           # POZA timerem
+          start = perf_counter()
+          measure_fn(ctx)            # MIERZONE
+          times.append(elapsed)
+          teardown_fn(ctx)           # POZA timerem
+
+        Dzięki temu timer obejmuje TYLKO właściwą operację CRUD,
+        bez inserta przygotowawczego (DELETE) i bez sprzątania (CREATE).
+        """
+        def _do_setup():
+            return setup_fn() if setup_fn else None
+
+        def _do_teardown(ctx):
+            if teardown_fn:
+                teardown_fn(ctx)
+
+        # Warmup – nie wliczany
+        ctx = _do_setup()
+        measure_fn(ctx)
+        _do_teardown(ctx)
+
+        times = []
+        for _ in range(runs):
+            ctx = _do_setup()
+            start = time.perf_counter()
+            measure_fn(ctx)
+            elapsed = time.perf_counter() - start
+            times.append(elapsed)
+            _do_teardown(ctx)
+        return BenchmarkEngine._stats(times)
+
+    def _record(self, db_name: str, op: str, scenario: str,
+                mean: float, median: float, stdev: float):
+        self.results.append((
+            db_name, self.scale, self.is_indexed, op, scenario,
+            mean, median, stdev,
+        ))
 
     # ═══════════════════════════════════════════════════════════════════
     #  Publiczne API
@@ -105,6 +175,8 @@ class BenchmarkEngine:
         self.is_indexed = is_indexed
         self.results = []
         self._cached_mongo_pids = None  # reset cache dla nowego runu
+        if self._rng_seed is not None:
+            random.seed(self._rng_seed)
 
         def _report(msg):
             if progress_callback:
@@ -267,97 +339,153 @@ class BenchmarkEngine:
         conn = self.cm.get_connector(db_type).get_connection()
 
         def _run(op: str, name: str, func):
-            avg = self._avg_time(func)
-            self._record(db_name, op, name, avg)
+            median, mean, stdev = self._avg_time(func)
+            self._record(db_name, op, name, mean, median, stdev)
+
+        def _run_split(op: str, name: str, measure_fn, setup_fn=None,
+                       teardown_fn=None):
+            median, mean, stdev = self._avg_time_split(
+                measure_fn, setup_fn=setup_fn, teardown_fn=teardown_fn)
+            self._record(db_name, op, name, mean, median, stdev)
 
         # ── CREATE (6 scenariuszy) ─────────────────────────────────────
 
-        def c1():
+        def c1_setup():
+            return random.randint(10_000_000, 99_999_999)
+
+        def c1_measure(pid):
             cur = conn.cursor()
-            pid = random.randint(10_000_000, 99_999_999)
             cur.execute(
                 "INSERT INTO patients (id,national_id,first_name,last_name,birth_date,gender) "
                 "VALUES (%s,%s,%s,%s,%s,%s)",
                 (pid, "99999999999", "TestName", "TestSurname", "2000-01-01", "M"),
             )
+            cur.close()
+
+        def c1_teardown(pid):
+            cur = conn.cursor()
             cur.execute("DELETE FROM patients WHERE id=%s", (pid,))
             cur.close()
 
-        _run("CREATE", "insert_patient", c1)
+        _run_split("CREATE", "insert_patient", c1_measure, c1_setup, c1_teardown)
 
-        def c2():
+        def c2_setup():
+            return (random.randint(10_000_000, 99_999_999),
+                    self._rid(self.max_patient), self._rid(self.max_doctor))
+
+        def c2_measure(ctx):
+            vid, pid, did = ctx
             cur = conn.cursor()
-            vid = random.randint(10_000_000, 99_999_999)
             cur.execute(
                 "INSERT INTO visits (id,patient_id,doctor_id,visit_date,status) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                (vid, self._rid(self.max_patient), self._rid(self.max_doctor),
-                 "2025-06-01", "scheduled"),
+                (vid, pid, did, "2025-06-01", "scheduled"),
             )
+            cur.close()
+
+        def c2_teardown(ctx):
+            vid, _, _ = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM visits WHERE id=%s", (vid,))
             cur.close()
 
-        _run("CREATE", "insert_visit", c2)
+        _run_split("CREATE", "insert_visit", c2_measure, c2_setup, c2_teardown)
 
-        def c3():
+        def c3_setup():
+            return (random.randint(10_000_000, 99_999_999),
+                    self._rid(self.max_visit), self._rid(self.max_disease))
+
+        def c3_measure(ctx):
+            did, vid, dis = ctx
             cur = conn.cursor()
-            did = random.randint(10_000_000, 99_999_999)
             cur.execute(
                 "INSERT INTO diagnoses (id,visit_id,disease_id,diagnosis_type,notes) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                (did, self._rid(self.max_visit), self._rid(self.max_disease),
-                 "primary", "bench note"),
+                (did, vid, dis, "primary", "bench note"),
             )
+            cur.close()
+
+        def c3_teardown(ctx):
+            did, _, _ = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM diagnoses WHERE id=%s", (did,))
             cur.close()
 
-        _run("CREATE", "insert_diagnosis", c3)
+        _run_split("CREATE", "insert_diagnosis", c3_measure, c3_setup, c3_teardown)
 
-        def c4():
+        def c4_setup():
+            return (random.randint(10_000_000, 99_999_999),
+                    random.randint(10_000_000, 99_999_999),
+                    self._rid(self.max_visit), self._rid(self.max_medication))
+
+        def c4_measure(ctx):
+            pid, iid, vid, mid = ctx
             cur = conn.cursor()
-            pid = random.randint(10_000_000, 99_999_999)
-            iid = random.randint(10_000_000, 99_999_999)
             cur.execute(
                 "INSERT INTO prescriptions (id,visit_id,prescription_code,issue_date) "
                 "VALUES (%s,%s,%s,%s)",
-                (pid, self._rid(self.max_visit), "RX-BENCH", "2025-06-01"),
+                (pid, vid, "RX-BENCH", "2025-06-01"),
             )
             cur.execute(
                 "INSERT INTO prescription_items (id,prescription_id,medication_id,dosage) "
                 "VALUES (%s,%s,%s,%s)",
-                (iid, pid, self._rid(self.max_medication), "1x500mg"),
+                (iid, pid, mid, "1x500mg"),
             )
+            cur.close()
+
+        def c4_teardown(ctx):
+            pid, iid, _, _ = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM prescription_items WHERE id=%s", (iid,))
             cur.execute("DELETE FROM prescriptions WHERE id=%s", (pid,))
             cur.close()
 
-        _run("CREATE", "insert_prescription_with_items", c4)
+        _run_split("CREATE", "insert_prescription_with_items",
+                   c4_measure, c4_setup, c4_teardown)
 
-        def c5():
+        def c5_setup():
+            return (random.randint(10_000_000, 99_999_999),
+                    self._rid(self.max_visit), self._rid(self.max_service))
+
+        def c5_measure(ctx):
+            sid, vid, srv = ctx
             cur = conn.cursor()
-            sid = random.randint(10_000_000, 99_999_999)
             cur.execute(
                 "INSERT INTO performed_services (id,visit_id,service_id,quantity,final_price) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                (sid, self._rid(self.max_visit), self._rid(self.max_service), 1, 199.99),
+                (sid, vid, srv, 1, 199.99),
             )
+            cur.close()
+
+        def c5_teardown(ctx):
+            sid, _, _ = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM performed_services WHERE id=%s", (sid,))
             cur.close()
 
-        _run("CREATE", "insert_performed_service", c5)
+        _run_split("CREATE", "insert_performed_service",
+                   c5_measure, c5_setup, c5_teardown)
 
-        def c6():
+        def c6_setup():
+            return (random.randint(10_000_000, 99_999_999), self._rid(self.max_visit))
+
+        def c6_measure(ctx):
+            tid, vid = ctx
             cur = conn.cursor()
-            tid = random.randint(10_000_000, 99_999_999)
             cur.execute(
                 "INSERT INTO test_results (id,visit_id,parameter_name,result_value,unit,min_norm,max_norm) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (tid, self._rid(self.max_visit), "Hemoglobina", 13.5, "g/dL", 12.0, 16.0),
+                (tid, vid, "Hemoglobina", 13.5, "g/dL", 12.0, 16.0),
             )
+            cur.close()
+
+        def c6_teardown(ctx):
+            tid, _ = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM test_results WHERE id=%s", (tid,))
             cur.close()
 
-        _run("CREATE", "insert_test_result", c6)
+        _run_split("CREATE", "insert_test_result", c6_measure, c6_setup, c6_teardown)
 
         # ── READ (6 scenariuszy) ───────────────────────────────────────
 
@@ -405,7 +533,7 @@ class BenchmarkEngine:
                 "JOIN visits v ON v.patient_id = p.id "
                 "LEFT JOIN performed_services ps ON ps.visit_id = v.id "
                 "LEFT JOIN medical_services ms ON ms.id = ps.service_id "
-                "WHERE p.id = %s",
+                "WHERE p.id = %s LIMIT 50",
                 (self._rid(self.max_patient),),
             )
             cur.fetchall()
@@ -420,7 +548,7 @@ class BenchmarkEngine:
                 "FROM visits v "
                 "JOIN performed_services ps ON ps.visit_id = v.id "
                 "WHERE v.patient_id = %s "
-                "GROUP BY v.id",
+                "GROUP BY v.id LIMIT 50",
                 (self._rid(self.max_patient),),
             )
             cur.fetchall()
@@ -435,7 +563,7 @@ class BenchmarkEngine:
                 "FROM prescriptions pr "
                 "JOIN prescription_items pi ON pi.prescription_id = pr.id "
                 "JOIN medications m ON pi.medication_id = m.id "
-                "WHERE pr.visit_id = %s",
+                "WHERE pr.visit_id = %s LIMIT 50",
                 (self._rid(self.max_visit),),
             )
             cur.fetchall()
@@ -494,77 +622,104 @@ class BenchmarkEngine:
         _run("UPDATE", "update_department_phone", u6)
 
         # ── DELETE (6 scenariuszy) ─────────────────────────────────────
-        # Wzorzec: INSERT tymczasowy + DELETE – mierzone razem (spójne z innymi DB)
+        # Wzorzec: setup wstawia wiersz (poza timerem), measure wykonuje
+        # TYLKO DELETE. Dzięki temu timer mierzy czysty koszt DELETE –
+        # bez wliczania czasu INSERT-a przygotowawczego.
 
-        def d1():
-            cur = conn.cursor()
+        def d1_setup():
             tid = random.randint(10_000_000, 99_999_999)
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO test_results (id,visit_id,parameter_name,result_value,unit,min_norm,max_norm) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (tid, 1, "TMP", 1.0, "U", 0.0, 1.0),
             )
+            cur.close()
+            return tid
+
+        def d1_measure(tid):
+            cur = conn.cursor()
             cur.execute("DELETE FROM test_results WHERE id=%s", (tid,))
             cur.close()
 
-        _run("DELETE", "delete_test_result", d1)
+        _run_split("DELETE", "delete_test_result", d1_measure, d1_setup)
 
-        def d2():
-            cur = conn.cursor()
+        def d2_setup():
             did = random.randint(10_000_000, 99_999_999)
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO diagnoses (id,visit_id,disease_id,diagnosis_type,notes) "
                 "VALUES (%s,%s,%s,%s,%s)",
                 (did, 1, 1, "primary", "tmp"),
             )
+            cur.close()
+            return did
+
+        def d2_measure(did):
+            cur = conn.cursor()
             cur.execute("DELETE FROM diagnoses WHERE id=%s", (did,))
             cur.close()
 
-        _run("DELETE", "delete_diagnosis", d2)
+        _run_split("DELETE", "delete_diagnosis", d2_measure, d2_setup)
 
-        def d3():
-            cur = conn.cursor()
+        def d3_setup():
             pid = random.randint(10_000_000, 99_999_999)
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO patients (id,national_id,first_name,last_name,birth_date,gender) "
                 "VALUES (%s,%s,%s,%s,%s,%s)",
                 (pid, "00000000000", "Del", "Test", "2000-01-01", "M"),
             )
+            cur.close()
+            return pid
+
+        def d3_measure(pid):
+            cur = conn.cursor()
             cur.execute("DELETE FROM patients WHERE id=%s", (pid,))
             cur.close()
 
-        _run("DELETE", "delete_patient", d3)
+        _run_split("DELETE", "delete_patient", d3_measure, d3_setup)
 
-        def d4():
-            cur = conn.cursor()
+        def d4_setup():
             sid = random.randint(10_000_000, 99_999_999)
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO performed_services (id,visit_id,service_id,quantity,final_price) "
                 "VALUES (%s,%s,%s,%s,%s)",
                 (sid, 1, 1, 1, 100.0),
             )
+            cur.close()
+            return sid
+
+        def d4_measure(sid):
+            cur = conn.cursor()
             cur.execute("DELETE FROM performed_services WHERE id=%s", (sid,))
             cur.close()
 
-        _run("DELETE", "delete_performed_service", d4)
+        _run_split("DELETE", "delete_performed_service", d4_measure, d4_setup)
 
-        def d5():
-            cur = conn.cursor()
+        def d5_setup():
             rxid = random.randint(10_000_000, 99_999_999)
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO prescriptions (id,visit_id,prescription_code,issue_date) "
                 "VALUES (%s,%s,%s,%s)",
                 (rxid, 1, "RX-DEL", "2025-01-01"),
             )
+            cur.close()
+            return rxid
+
+        def d5_measure(rxid):
+            cur = conn.cursor()
             cur.execute("DELETE FROM prescriptions WHERE id=%s", (rxid,))
             cur.close()
 
-        _run("DELETE", "delete_prescription", d5)
+        _run_split("DELETE", "delete_prescription", d5_measure, d5_setup)
 
-        def d6():
-            cur = conn.cursor()
+        def d6_setup():
             vid = random.randint(10_000_000, 99_999_999)
             pid_tmp = random.randint(10_000_000, 99_999_999)
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO patients (id,national_id,first_name,last_name,birth_date,gender) "
                 "VALUES (%s,%s,%s,%s,%s,%s)",
@@ -575,11 +730,23 @@ class BenchmarkEngine:
                 "VALUES (%s,%s,%s,%s,%s)",
                 (vid, pid_tmp, 1, "2025-01-01", "scheduled"),
             )
+            cur.close()
+            return (vid, pid_tmp)
+
+        def d6_measure(ctx):
+            vid, _ = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM visits WHERE id=%s", (vid,))
+            cur.close()
+
+        def d6_teardown(ctx):
+            _, pid_tmp = ctx
+            cur = conn.cursor()
             cur.execute("DELETE FROM patients WHERE id=%s", (pid_tmp,))
             cur.close()
 
-        _run("DELETE", "delete_visit_cascade", d6)
+        _run_split("DELETE", "delete_visit_cascade",
+                   d6_measure, d6_setup, d6_teardown)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Scenariusze MongoDB – 24 scenariusze
@@ -589,28 +756,49 @@ class BenchmarkEngine:
         db = self.cm.get_connector(DatabaseType.MONGODB).get_db()
         db_name = DatabaseType.MONGODB.value
 
-        def _run(op: str, name: str, func):
-            avg = self._avg_time(func)
-            self._record(db_name, op, name, avg)
+        def _run(op: str, name: str, func, cleanup=None):
+            median, mean, stdev = self._avg_time(func, cleanup=cleanup)
+            self._record(db_name, op, name, mean, median, stdev)
+
+        def _run_split(op: str, name: str, measure_fn, setup_fn=None,
+                       teardown_fn=None):
+            median, mean, stdev = self._avg_time_split(
+                measure_fn, setup_fn=setup_fn, teardown_fn=teardown_fn)
+            self._record(db_name, op, name, mean, median, stdev)
 
         # ── CREATE ────────────────────────────────────────────────────
+        # Wzorzec: setup poza timerem (przygotowuje ID/pid),
+        # measure wykonuje tylko zapis, teardown sprząta (poza timerem).
 
-        def c1():
-            pid = random.randint(10_000_000, 99_999_999)
+        def mc1_setup():
+            return random.randint(10_000_000, 99_999_999)
+
+        def mc1_measure(pid):
             db.patients.insert_one({
                 "_id": pid, "first_name": "T", "last_name": "P",
                 "national_id": "00000", "gender": "M", "visits": [],
             })
+
+        def mc1_teardown(pid):
             db.patients.delete_one({"_id": pid})
 
-        _run("CREATE", "insert_patient", c1)
+        _run_split("CREATE", "insert_patient",
+                   mc1_measure, mc1_setup, mc1_teardown)
 
-        def c2():
+        def mc2_setup():
+            return (
+                random.randint(10_000_000, 99_999_999),
+                self._rid(self.max_patient),
+                self._rid(self.max_doctor),
+            )
+
+        def mc2_measure(ctx):
+            bench_vid, pid, did = ctx
             db.patients.update_one(
-                {"_id": self._rid(self.max_patient)},
+                {"_id": pid},
                 {"$push": {"visits": {
-                    "visit_id": random.randint(10_000_000, 99_999_999),
-                    "doctor_id": self._rid(self.max_doctor),
+                    "visit_id": bench_vid,
+                    "doctor_id": did,
                     "status": "scheduled",
                     "visit_date": "2025-06-01",
                     "diagnoses": [], "prescriptions": [],
@@ -618,55 +806,97 @@ class BenchmarkEngine:
                 }}},
             )
 
-        _run("CREATE", "insert_visit", c2)
-
-        def c3():
-            # Używamy max_disease zamiast hardkodowanego 100
+        def mc2_teardown(ctx):
+            bench_vid, pid, _ = ctx
             db.patients.update_one(
-                {"_id": self._mongo_pid_with_visits(db)},
+                {"_id": pid},
+                {"$pull": {"visits": {"visit_id": bench_vid}}},
+            )
+
+        _run_split("CREATE", "insert_visit",
+                   mc2_measure, mc2_setup, mc2_teardown)
+
+        def mc3_setup():
+            return self._mongo_pid_with_visits(db)
+
+        def mc3_measure(pid):
+            db.patients.update_one(
+                {"_id": pid},
                 {"$push": {"visits.0.diagnoses": {
                     "disease_id": self._rid(self.max_disease),
                     "diagnosis_type": "primary",
                     "notes": "bench",
+                    "_bench": True,
                 }}},
             )
 
-        _run("CREATE", "insert_diagnosis", c3)
-
-        def c4():
+        def mc3_teardown(pid):
             db.patients.update_one(
-                {"_id": self._mongo_pid_with_visits(db)},
+                {"_id": pid},
+                {"$pull": {"visits.0.diagnoses": {"_bench": True}}},
+            )
+
+        _run_split("CREATE", "insert_diagnosis",
+                   mc3_measure, mc3_setup, mc3_teardown)
+
+        def mc4_measure(pid):
+            db.patients.update_one(
+                {"_id": pid},
                 {"$push": {"visits.0.prescriptions": {
                     "prescription_code": "RX-NEW",
                     "issue_date": "2025-06-01",
                     "items": [{"medication_id": self._rid(self.max_medication),
                                "dosage": "1x200mg"}],
+                    "_bench": True,
                 }}},
             )
 
-        _run("CREATE", "insert_prescription_with_items", c4)
-
-        def c5():
+        def mc4_teardown(pid):
             db.patients.update_one(
-                {"_id": self._mongo_pid_with_visits(db)},
+                {"_id": pid},
+                {"$pull": {"visits.0.prescriptions": {"_bench": True}}},
+            )
+
+        _run_split("CREATE", "insert_prescription_with_items",
+                   mc4_measure, mc3_setup, mc4_teardown)
+
+        def mc5_measure(pid):
+            db.patients.update_one(
+                {"_id": pid},
                 {"$push": {"visits.0.performed_services": {
                     "service_id": self._rid(self.max_service),
                     "quantity": 1, "final_price": 100.0,
+                    "_bench": True,
                 }}},
             )
 
-        _run("CREATE", "insert_performed_service", c5)
-
-        def c6():
+        def mc5_teardown(pid):
             db.patients.update_one(
-                {"_id": self._mongo_pid_with_visits(db)},
+                {"_id": pid},
+                {"$pull": {"visits.0.performed_services": {"_bench": True}}},
+            )
+
+        _run_split("CREATE", "insert_performed_service",
+                   mc5_measure, mc3_setup, mc5_teardown)
+
+        def mc6_measure(pid):
+            db.patients.update_one(
+                {"_id": pid},
                 {"$push": {"visits.0.test_results": {
                     "parameter_name": "Glukoza", "result_value": 90.0,
                     "unit": "mg/dL", "min_norm": 70.0, "max_norm": 110.0,
+                    "_bench": True,
                 }}},
             )
 
-        _run("CREATE", "insert_test_result", c6)
+        def mc6_teardown(pid):
+            db.patients.update_one(
+                {"_id": pid},
+                {"$pull": {"visits.0.test_results": {"_bench": True}}},
+            )
+
+        _run_split("CREATE", "insert_test_result",
+                   mc6_measure, mc3_setup, mc6_teardown)
 
         # ── READ ──────────────────────────────────────────────────────
 
@@ -691,6 +921,7 @@ class BenchmarkEngine:
                     "disease_id": "$visits.diagnoses.disease_id",
                     "notes": "$visits.diagnoses.notes",
                 }},
+                {"$limit": 50},
             ]))
 
         _run("READ", "select_visit_diagnoses", r3_mongo)
@@ -707,8 +938,9 @@ class BenchmarkEngine:
                 {"$match": {"_id": self._rid(self.max_patient)}},
                 {"$unwind": "$visits"},
                 {"$unwind": "$visits.performed_services"},
-                {"$group": {"_id": "$_id",
+                {"$group": {"_id": "$visits.visit_id",
                             "total": {"$sum": "$visits.performed_services.final_price"}}},
+                {"$limit": 50},
             ]
             list(db.patients.aggregate(pipeline))
 
@@ -767,79 +999,98 @@ class BenchmarkEngine:
         _run("UPDATE", "update_department_phone", u6)
 
         # ── DELETE ────────────────────────────────────────────────────
-        # Wzorzec: $push tymczasowego elementu + $pull – mierzone razem
+        # Wzorzec: setup wykonuje $push tymczasowego elementu (poza timerem),
+        # measure wykonuje TYLKO $pull (czysty pomiar usunięcia).
 
-        def d1():
+        def md1_setup():
             pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
                 {"_id": pid},
                 {"$push": {"visits.0.test_results": {"parameter_name": "TMP_DEL"}}},
             )
+            return pid
+
+        def md1_measure(pid):
             db.patients.update_one(
                 {"_id": pid},
                 {"$pull": {"visits.0.test_results": {"parameter_name": "TMP_DEL"}}},
             )
 
-        _run("DELETE", "delete_test_result", d1)
+        _run_split("DELETE", "delete_test_result", md1_measure, md1_setup)
 
-        def d2():
+        def md2_setup():
             pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
                 {"_id": pid},
                 {"$push": {"visits.0.diagnoses": {"disease_id": 99999}}},
             )
+            return pid
+
+        def md2_measure(pid):
             db.patients.update_one(
                 {"_id": pid},
                 {"$pull": {"visits.0.diagnoses": {"disease_id": 99999}}},
             )
 
-        _run("DELETE", "delete_diagnosis", d2)
+        _run_split("DELETE", "delete_diagnosis", md2_measure, md2_setup)
 
-        def d3():
+        def md3_setup():
             pid = random.randint(10_000_000, 99_999_999)
             db.patients.insert_one({"_id": pid, "visits": []})
+            return pid
+
+        def md3_measure(pid):
             db.patients.delete_one({"_id": pid})
 
-        _run("DELETE", "delete_patient", d3)
+        _run_split("DELETE", "delete_patient", md3_measure, md3_setup)
 
-        def d4():
+        def md4_setup():
             pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
                 {"_id": pid},
                 {"$push": {"visits.0.performed_services": {"service_id": 99999}}},
             )
+            return pid
+
+        def md4_measure(pid):
             db.patients.update_one(
                 {"_id": pid},
                 {"$pull": {"visits.0.performed_services": {"service_id": 99999}}},
             )
 
-        _run("DELETE", "delete_performed_service", d4)
+        _run_split("DELETE", "delete_performed_service", md4_measure, md4_setup)
 
-        def d5():
+        def md5_setup():
             pid = self._mongo_pid_with_visits(db)
             db.patients.update_one(
                 {"_id": pid},
                 {"$push": {"visits.0.prescriptions": {"prescription_code": "RX-DEL"}}},
             )
+            return pid
+
+        def md5_measure(pid):
             db.patients.update_one(
                 {"_id": pid},
                 {"$pull": {"visits.0.prescriptions": {"prescription_code": "RX-DEL"}}},
             )
 
-        _run("DELETE", "delete_prescription", d5)
+        _run_split("DELETE", "delete_prescription", md5_measure, md5_setup)
 
-        def d6():
+        def md6_setup():
             pid = self._rid(self.max_patient)
             db.patients.update_one(
                 {"_id": pid},
                 {"$push": {"visits": {"visit_id": 99999999}}},
             )
+            return pid
+
+        def md6_measure(pid):
             db.patients.update_one(
                 {"_id": pid},
                 {"$pull": {"visits": {"visit_id": 99999999}}},
             )
 
-        _run("DELETE", "delete_visit_cascade", d6)
+        _run_split("DELETE", "delete_visit_cascade", md6_measure, md6_setup)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Scenariusze Redis – 24 scenariusze
@@ -865,15 +1116,23 @@ class BenchmarkEngine:
         db_name = DatabaseType.REDIS.value
 
         def _run(op: str, name: str, func):
-            avg = self._avg_time(func)
-            self._record(db_name, op, name, avg)
+            median, mean, stdev = self._avg_time(func)
+            self._record(db_name, op, name, mean, median, stdev)
+
+        def _run_split(op: str, name: str, measure_fn, setup_fn=None,
+                       teardown_fn=None):
+            median, mean, stdev = self._avg_time_split(
+                measure_fn, setup_fn=setup_fn, teardown_fn=teardown_fn)
+            self._record(db_name, op, name, mean, median, stdev)
 
         # ── CREATE ────────────────────────────────────────────────────
-        # Wzorzec: tworzenie wielu powiązanych kluczy (jak INSERT w SQL
-        # tworzy wiersz + aktualizuje indeksy/FK), następnie cleanup.
+        # Wzorzec: setup (poza timerem) generuje ID/kontekst,
+        # measure wykonuje TYLKO zapis, teardown czyści (poza timerem).
 
-        def c1():
-            pid = random.randint(10_000_000, 99_999_999)
+        def rc1_setup():
+            return random.randint(10_000_000, 99_999_999)
+
+        def rc1_measure(pid):
             pipe = r.pipeline()
             pipe.hset(f"patient:{pid}", mapping={
                 "first_name": "T", "last_name": "P",
@@ -881,38 +1140,57 @@ class BenchmarkEngine:
             })
             pipe.sadd(f"patient:visits:{pid}", "0")
             pipe.execute()
+
+        def rc1_teardown(pid):
             r.delete(f"patient:{pid}", f"patient:visits:{pid}")
 
-        _run("CREATE", "insert_patient", c1)
+        _run_split("CREATE", "insert_patient", rc1_measure, rc1_setup, rc1_teardown)
 
-        def c2():
-            vid = random.randint(10_000_000, 99_999_999)
-            pid = self._rid(self.max_patient)
-            did = self._rid(self.max_doctor)
+        def rc2_setup():
+            return (
+                random.randint(10_000_000, 99_999_999),
+                self._rid(self.max_patient),
+                self._rid(self.max_doctor),
+            )
+
+        def rc2_measure(ctx):
+            vid, pid, did = ctx
             pipe = r.pipeline()
             pipe.set(f"visit:status:{vid}", "scheduled")
             pipe.set(f"visit:doctor:{vid}", str(did))
             pipe.sadd(f"patient:visits:{pid}", str(vid))
             pipe.execute()
+
+        def rc2_teardown(ctx):
+            vid, pid, _ = ctx
             pipe2 = r.pipeline()
             pipe2.delete(f"visit:status:{vid}", f"visit:doctor:{vid}")
             pipe2.srem(f"patient:visits:{pid}", str(vid))
             pipe2.execute()
 
-        _run("CREATE", "insert_visit", c2)
+        _run_split("CREATE", "insert_visit", rc2_measure, rc2_setup, rc2_teardown)
 
-        def c3():
-            vid = self._rid(self.max_visit)
-            pipe = r.pipeline()
-            pipe.rpush(f"visit:diag:{vid}", f"{self._rid(self.max_disease)}:primary:bench")
-            pipe.execute()
+        def rc3_setup():
+            return (
+                self._rid(self.max_visit),
+                f"{self._rid(self.max_disease)}:primary:bench",
+            )
 
-        _run("CREATE", "insert_diagnosis", c3)
+        def rc3_measure(ctx):
+            vid, val = ctx
+            r.rpush(f"visit:diag:{vid}", val)
 
-        def c4():
-            rxid = random.randint(10_000_000, 99_999_999)
-            pipe = r.pipeline()
-            pipe.hset(f"prescription:{rxid}", mapping={
+        def rc3_teardown(ctx):
+            vid, val = ctx
+            r.lrem(f"visit:diag:{vid}", 1, val)
+
+        _run_split("CREATE", "insert_diagnosis", rc3_measure, rc3_setup, rc3_teardown)
+
+        def rc4_setup():
+            return random.randint(10_000_000, 99_999_999)
+
+        def rc4_measure(rxid):
+            r.hset(f"prescription:{rxid}", mapping={
                 "visit_id": str(self._rid(self.max_visit)),
                 "code": "RX-NEW",
                 "issue_date": "2025-06-01",
@@ -921,14 +1199,21 @@ class BenchmarkEngine:
                 "med_2": str(self._rid(self.max_medication)),
                 "dosage_2": "2x200mg",
             })
-            pipe.execute()
+
+        def rc4_teardown(rxid):
             r.delete(f"prescription:{rxid}")
 
-        _run("CREATE", "insert_prescription_with_items", c4)
+        _run_split("CREATE", "insert_prescription_with_items",
+                   rc4_measure, rc4_setup, rc4_teardown)
 
-        def c5():
-            sid = random.randint(10_000_000, 99_999_999)
-            vid = self._rid(self.max_visit)
+        def rc5_setup():
+            return (
+                random.randint(10_000_000, 99_999_999),
+                self._rid(self.max_visit),
+            )
+
+        def rc5_measure(ctx):
+            sid, vid = ctx
             pipe = r.pipeline()
             pipe.hset(f"service:perf:{sid}", mapping={
                 "visit_id": str(vid), "service_id": str(self._rid(self.max_service)),
@@ -936,36 +1221,49 @@ class BenchmarkEngine:
             })
             pipe.hincrbyfloat(f"service:total:{vid}", "total_price", 199.99)
             pipe.execute()
+
+        def rc5_teardown(ctx):
+            sid, vid = ctx
             pipe2 = r.pipeline()
             pipe2.delete(f"service:perf:{sid}")
             pipe2.hincrbyfloat(f"service:total:{vid}", "total_price", -199.99)
             pipe2.execute()
 
-        _run("CREATE", "insert_performed_service", c5)
+        _run_split("CREATE", "insert_performed_service",
+                   rc5_measure, rc5_setup, rc5_teardown)
 
-        def c6():
-            tid = random.randint(10_000_000, 99_999_999)
+        def rc6_setup():
+            return random.randint(10_000_000, 99_999_999)
+
+        def rc6_measure(tid):
             r.hset(f"test:{tid}", mapping={
                 "visit_id": str(self._rid(self.max_visit)),
                 "parameter": "Hemoglobina", "value": "13.5",
                 "unit": "g/dL", "min_norm": "12.0", "max_norm": "16.0",
             })
+
+        def rc6_teardown(tid):
             r.delete(f"test:{tid}")
 
-        _run("CREATE", "insert_test_result", c6)
+        _run_split("CREATE", "insert_test_result",
+                   rc6_measure, rc6_setup, rc6_teardown)
 
         # ── READ ──────────────────────────────────────────────────────
         # Symulacja JOINów przez wielokluczowe pipeline'y.
+        # Wzorzec: setup (smembers/lrange + slice do LIMIT 50) poza timerem,
+        # measure wykonuje tylko właściwe odczyty wielokluczowe.
 
         _run("READ", "select_patient_by_id",
              lambda: r.hgetall(f"patient:{self._rid(self.max_patient)}"))
 
-        def r2():
+        def rr2_setup():
             pid = self._rid(self.max_patient)
             visit_ids = r.smembers(f"patient:visits:{pid}")
-            if not visit_ids:
-                return []
-            sample = list(visit_ids)[:20]
+            return list(visit_ids)[:50] if visit_ids else []
+
+        def rr2_measure(sample):
+            if not sample:
+                return
             pipe = r.pipeline()
             for vid in sample:
                 pipe.get(f"visit:status:{vid}")
@@ -977,50 +1275,57 @@ class BenchmarkEngine:
                     doctor_ids.add(results[i])
             if doctor_ids:
                 pipe2 = r.pipeline()
-                for did in list(doctor_ids)[:10]:
+                for did in list(doctor_ids)[:50]:
                     pipe2.hgetall(f"session:doctor:{did}")
                 pipe2.execute()
 
-        _run("READ", "select_visits_with_doctor", r2)
+        _run_split("READ", "select_visits_with_doctor", rr2_measure, rr2_setup)
 
-        def r3():
+        def rr3_setup():
             vid = self._rid(self.max_visit)
             diagnoses = r.lrange(f"visit:diag:{vid}", 0, -1)
-            if diagnoses:
-                pipe = r.pipeline()
-                for d in diagnoses[:10]:
-                    parts = d.split(":")
-                    if parts:
-                        pipe.exists(f"disease:{parts[0]}")
-                pipe.execute()
+            return diagnoses[:50] if diagnoses else []
 
-        _run("READ", "select_visit_diagnoses", r3)
-
-        def r4():
-            pid = self._rid(self.max_patient)
+        def rr3_measure(diagnoses):
+            if not diagnoses:
+                return
             pipe = r.pipeline()
-            pipe.hgetall(f"patient:{pid}")
-            pipe.smembers(f"patient:visits:{pid}")
-            res = pipe.execute()
-            visit_ids = res[1] if res[1] else set()
-            if visit_ids:
-                sample = list(visit_ids)[:10]
-                pipe2 = r.pipeline()
-                for vid in sample:
-                    pipe2.get(f"visit:status:{vid}")
-                    pipe2.lrange(f"visit:diag:{vid}", 0, -1)
-                    pipe2.hgetall(f"service:total:{vid}")
-                pipe2.execute()
+            for d in diagnoses:
+                parts = d.split(":")
+                if parts:
+                    pipe.exists(f"disease:{parts[0]}")
+            pipe.execute()
 
-        _run("READ", "select_patient_full_history", r4)
+        _run_split("READ", "select_visit_diagnoses", rr3_measure, rr3_setup)
 
-        def r5():
+        def rr4_setup():
             pid = self._rid(self.max_patient)
             visit_ids = r.smembers(f"patient:visits:{pid}")
-            if not visit_ids:
+            sample = list(visit_ids)[:50] if visit_ids else []
+            return (pid, sample)
+
+        def rr4_measure(ctx):
+            pid, sample = ctx
+            pipe = r.pipeline()
+            pipe.hgetall(f"patient:{pid}")
+            for vid in sample:
+                pipe.get(f"visit:status:{vid}")
+                pipe.lrange(f"visit:diag:{vid}", 0, -1)
+                pipe.hgetall(f"service:total:{vid}")
+            pipe.execute()
+
+        _run_split("READ", "select_patient_full_history", rr4_measure, rr4_setup)
+
+        def rr5_setup():
+            pid = self._rid(self.max_patient)
+            visit_ids = r.smembers(f"patient:visits:{pid}")
+            return list(visit_ids)[:50] if visit_ids else []
+
+        def rr5_measure(sample):
+            if not sample:
                 return 0.0
             pipe = r.pipeline()
-            for vid in visit_ids:
+            for vid in sample:
                 pipe.hgetall(f"service:total:{vid}")
             results = pipe.execute()
             total = 0.0
@@ -1032,24 +1337,22 @@ class BenchmarkEngine:
                         pass
             return total
 
-        _run("READ", "select_aggregated_costs", r5)
+        _run_split("READ", "select_aggregated_costs", rr5_measure, rr5_setup)
 
-        def r6():
-            pid = self._rid(self.max_patient)
-            visit_ids = r.smembers(f"patient:visits:{pid}")
-            if not visit_ids:
+        def rr6_setup():
+            vid = self._rid(self.max_visit)
+            rx_ids = r.smembers(f"visit:prescriptions:{vid}")
+            return list(rx_ids)[:50] if rx_ids else []
+
+        def rr6_measure(rx_ids):
+            if not rx_ids:
                 return
-            sample = list(visit_ids)[:10]
             pipe = r.pipeline()
-            for vid in sample:
-                pipe.get(f"visit:status:{vid}")
-            statuses = pipe.execute()
-            pipe2 = r.pipeline()
-            for i, vid in enumerate(sample):
-                pipe2.hgetall(f"prescription:{vid}")
-            pipe2.execute()
+            for rxid in rx_ids:
+                pipe.hgetall(f"prescription:{rxid}")
+            pipe.execute()
 
-        _run("READ", "select_prescriptions_with_meds", r6)
+        _run_split("READ", "select_prescriptions_with_meds", rr6_measure, rr6_setup)
 
         # ── UPDATE ────────────────────────────────────────────────────
 
@@ -1088,26 +1391,32 @@ class BenchmarkEngine:
                             "phone", "+48 000 000 000"))
 
         # ── DELETE ────────────────────────────────────────────────────
-        # Wzorzec: INSERT tmp + DELETE – pomiar cyklu życia klucza.
+        # Wzorzec: setup tworzy klucze (poza timerem), measure wykonuje TYLKO DELETE.
 
-        def d1():
+        def rd1_setup():
             tid = random.randint(10_000_000, 99_999_999)
             r.hset(f"test:{tid}", mapping={
                 "parameter": "Hemo", "value": "13.5", "unit": "g/dL",
                 "min_norm": "12.0", "max_norm": "16.0",
             })
+            return tid
+
+        def rd1_measure(tid):
             r.delete(f"test:{tid}")
 
-        _run("DELETE", "delete_test_result", d1)
+        _run_split("DELETE", "delete_test_result", rd1_measure, rd1_setup)
 
-        def d2():
+        def rd2_setup():
             vid = self._rid(self.max_visit)
             r.rpush(f"visit:diag:{vid}", "99999:primary:tmp")
+            return vid
+
+        def rd2_measure(vid):
             r.lrem(f"visit:diag:{vid}", 1, "99999:primary:tmp")
 
-        _run("DELETE", "delete_diagnosis", d2)
+        _run_split("DELETE", "delete_diagnosis", rd2_measure, rd2_setup)
 
-        def d3():
+        def rd3_setup():
             pid = random.randint(10_000_000, 99_999_999)
             pipe = r.pipeline()
             pipe.hset(f"patient:{pid}", mapping={
@@ -1116,30 +1425,39 @@ class BenchmarkEngine:
             })
             pipe.sadd(f"patient:visits:{pid}", "0")
             pipe.execute()
+            return pid
+
+        def rd3_measure(pid):
             r.delete(f"patient:{pid}", f"patient:visits:{pid}")
 
-        _run("DELETE", "delete_patient", d3)
+        _run_split("DELETE", "delete_patient", rd3_measure, rd3_setup)
 
-        def d4():
+        def rd4_setup():
             sid = random.randint(10_000_000, 99_999_999)
             r.hset(f"service:perf:{sid}", mapping={
                 "total_price": "100.0", "visit_id": "1",
             })
+            return sid
+
+        def rd4_measure(sid):
             r.delete(f"service:perf:{sid}")
 
-        _run("DELETE", "delete_performed_service", d4)
+        _run_split("DELETE", "delete_performed_service", rd4_measure, rd4_setup)
 
-        def d5():
+        def rd5_setup():
             rxid = random.randint(10_000_000, 99_999_999)
             r.hset(f"prescription:{rxid}", mapping={
                 "code": "RX-DEL", "visit_id": "1",
                 "med_1": "10", "dosage_1": "1x100mg",
             })
+            return rxid
+
+        def rd5_measure(rxid):
             r.delete(f"prescription:{rxid}")
 
-        _run("DELETE", "delete_prescription", d5)
+        _run_split("DELETE", "delete_prescription", rd5_measure, rd5_setup)
 
-        def d6():
+        def rd6_setup():
             vid = random.randint(10_000_000, 99_999_999)
             pid = random.randint(10_000_000, 99_999_999)
             pipe = r.pipeline()
@@ -1148,12 +1466,16 @@ class BenchmarkEngine:
             pipe.set(f"visit:doctor:{vid}", "1")
             pipe.sadd(f"patient:visits:{pid}", str(vid))
             pipe.execute()
+            return (pid, vid)
+
+        def rd6_measure(ctx):
+            pid, vid = ctx
             r.delete(
                 f"patient:{pid}", f"visit:status:{vid}",
                 f"visit:doctor:{vid}", f"patient:visits:{pid}",
             )
 
-        _run("DELETE", "delete_visit_cascade", d6)
+        _run_split("DELETE", "delete_visit_cascade", rd6_measure, rd6_setup)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Zapis wyników

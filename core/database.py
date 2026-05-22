@@ -6,8 +6,23 @@ Wzorzec: Abstract Factory + Connection Manager.
 from abc import ABC, abstractmethod
 from enum import Enum
 
+import struct as _struct
+
 import psycopg2
 import mysql.connector
+import mysql.connector.connection as _mc_conn_module
+import mysql.connector.abstracts as _mc_abs_module
+
+# platform.architecture() hangs on some Windows systems (spawns a subprocess).
+# mysql.connector calls it via get_platform() inside _add_default_conn_attrs().
+# Patch both module references before any connection is made.
+def _safe_get_platform():
+    _arch = "x86_64" if _struct.calcsize("P") * 8 == 64 else "i386"
+    return {"arch": _arch, "version": "Windows-10.0"}
+
+_mc_conn_module.get_platform = _safe_get_platform
+_mc_abs_module.get_platform = _safe_get_platform
+
 from pymongo import MongoClient
 import redis
 
@@ -99,7 +114,7 @@ class PostgresConnection(DatabaseConnection):
 class MysqlConnection(DatabaseConnection):
     def connect(self):
         self.connection = mysql.connector.connect(
-            **DatabaseConfig.MYSQL, autocommit=True
+            **DatabaseConfig.MYSQL, autocommit=True, use_pure=True
         )
 
     def close(self):
@@ -114,7 +129,7 @@ class MysqlConnection(DatabaseConnection):
 
     def ping(self) -> bool:
         try:
-            conn = mysql.connector.connect(**DatabaseConfig.MYSQL, autocommit=True)
+            conn = mysql.connector.connect(**DatabaseConfig.MYSQL, autocommit=True, use_pure=True)
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
@@ -132,7 +147,10 @@ class MongoConnection(DatabaseConnection):
 
     def connect(self):
         self.connection = MongoClient(
-            DatabaseConfig.MONGO_URI, serverSelectionTimeoutMS=5000
+            DatabaseConfig.MONGO_URI,
+            serverSelectionTimeoutMS=5000,
+            socketTimeoutMS=3600000,
+            connectTimeoutMS=30000,
         )
         self.db = self.connection[DatabaseConfig.MONGO_DB]
 
@@ -162,7 +180,10 @@ class MongoConnection(DatabaseConnection):
 class RedisConnection(DatabaseConnection):
     def connect(self):
         self.connection = redis.Redis(
-            **DatabaseConfig.REDIS, decode_responses=True, socket_timeout=5
+            **DatabaseConfig.REDIS,
+            decode_responses=True,
+            socket_timeout=600,
+            socket_connect_timeout=30,
         )
 
     def close(self):

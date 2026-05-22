@@ -1,0 +1,41 @@
+\begin{table}[H]
+\centering
+\caption{Czas operacji usuwania danych [ms] -- z~indeksami. Najlepszy wynik w~wierszu pogrubiony. Redis nie posiada mechanizmu indeksow (kolumna `---').}
+\label{tab:delete_idx}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\diagnozy}}
+ & 500k & 1.01 & 5.10 & \textbf{0.76} & --- \\
+ & 1M & 0.95 & 4.24 & \textbf{0.74} & --- \\
+ & 10M & 0.99 & 4.02 & \textbf{0.80} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\pacjenta}}
+ & 500k & 1.04 & 4.51 & \textbf{0.72} & --- \\
+ & 1M & 1.06 & 3.86 & \textbf{0.73} & --- \\
+ & 10M & 1.03 & 3.82 & \textbf{0.71} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\wykonanej usługi}}
+ & 500k & 0.98 & 4.18 & \textbf{0.81} & --- \\
+ & 1M & 0.94 & 3.97 & \textbf{0.78} & --- \\
+ & 10M & 1.02 & 4.12 & \textbf{0.71} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\recepty}}
+ & 500k & 1.13 & 4.04 & \textbf{0.71} & --- \\
+ & 1M & 0.98 & 4.47 & \textbf{0.72} & --- \\
+ & 10M & 1.00 & 3.91 & \textbf{0.73} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\wyniku badania}}
+ & 500k & 0.99 & 3.73 & \textbf{0.76} & --- \\
+ & 1M & 1.25 & 3.99 & \textbf{0.69} & --- \\
+ & 10M & 1.06 & 4.13 & \textbf{0.71} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Kaskadowe\\usunięcie wizyty}}
+ & 500k & 1.08 & 4.50 & \textbf{0.78} & --- \\
+ & 1M & 1.01 & 4.53 & \textbf{0.77} & --- \\
+ & 10M & 1.05 & 4.43 & \textbf{0.80} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}

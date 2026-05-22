@@ -1,0 +1,41 @@
+\begin{table}[H]
+\centering
+\caption{Czas operacji odczytu danych [ms] -- bez indeksow. Najlepszy wynik w~wierszu pogrubiony.}
+\label{tab:read_no}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Suma kosztów\\usług pacjenta}}
+ & 500k & 8.50 & 1.41 & 0.75 & \textbf{0.69} \\
+ & 1M & 13.55 & 1.39 & 0.77 & \textbf{0.62} \\
+ & 10M & 84.85 & 1.50 & 0.76 & \textbf{0.56} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Pobranie pacjenta\\po identyfikatorze}}
+ & 500k & \textbf{0.41} & 1.23 & 0.77 & 0.46 \\
+ & 1M & 0.41 & 1.25 & 0.77 & \textbf{0.41} \\
+ & 10M & 0.48 & 1.35 & 0.89 & \textbf{0.42} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Pełna historia\\pacjenta}}
+ & 500k & 8.58 & 1.46 & \textbf{0.77} & 1.06 \\
+ & 1M & 13.85 & 1.42 & \textbf{0.73} & 0.83 \\
+ & 10M & 84.63 & 1.94 & \textbf{0.79} & 0.83 \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Recepty\\z lekami}}
+ & 500k & 4.27 & 1.29 & 0.83 & \textbf{0.16} \\
+ & 1M & 5.55 & 1.29 & 0.75 & \textbf{0.00} \\
+ & 10M & 49.29 & 1.23 & 0.86 & \textbf{0.44} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Diagnozy\\wizyty}}
+ & 500k & 3.65 & 1.22 & 0.85 & \textbf{0.17} \\
+ & 1M & 6.88 & 1.17 & 0.85 & \textbf{0.28} \\
+ & 10M & 46.25 & 1.20 & 0.96 & \textbf{0.28} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wizyty pacjenta\\z lekarzem}}
+ & 500k & 3.80 & 1.49 & 1.71 & \textbf{1.35} \\
+ & 1M & 8.97 & 1.40 & 2.02 & \textbf{1.26} \\
+ & 10M & 45.48 & 1.47 & 9.21 & \textbf{1.28} \\
+\bottomrule
+\end{tabular}
+\end{table}

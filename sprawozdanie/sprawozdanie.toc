@@ -1,36 +1,51 @@
 \babel@toc {polish}{}\relax 
-\contentsline {section}{\numberline {1}Cel i zakres pracy}{3}{section.1}%
-\contentsline {subsection}{\numberline {1.1}Hipoteza badawcza}{3}{subsection.1.1}%
-\contentsline {section}{\numberline {2}Opis wybranych systemów zarządzania bazami danych}{3}{section.2}%
-\contentsline {subsection}{\numberline {2.1}PostgreSQL 16}{3}{subsection.2.1}%
-\contentsline {subsection}{\numberline {2.2}MySQL 8.0}{3}{subsection.2.2}%
-\contentsline {subsection}{\numberline {2.3}MongoDB 7}{4}{subsection.2.3}%
-\contentsline {subsection}{\numberline {2.4}Redis 7}{4}{subsection.2.4}%
-\contentsline {section}{\numberline {3}Awaryjność, bezpieczeństwo, migracje, integracje i skalowalność}{5}{section.3}%
-\contentsline {section}{\numberline {4}Opis zbioru danych}{5}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Modele danych w systemach nierelacyjnych}{6}{subsection.4.1}%
-\contentsline {subsection}{\numberline {4.2}Skale danych testowych}{7}{subsection.4.2}%
-\contentsline {section}{\numberline {5}Opis aplikacji testowej}{7}{section.5}%
-\contentsline {subsection}{\numberline {5.1}Wymagania}{7}{subsection.5.1}%
-\contentsline {subsection}{\numberline {5.2}Wykorzystane technologie i narzędzia}{7}{subsection.5.2}%
-\contentsline {subsection}{\numberline {5.3}Struktura projektu i opis działania}{7}{subsection.5.3}%
-\contentsline {section}{\numberline {6}Opis scenariuszy testowych}{8}{section.6}%
-\contentsline {section}{\numberline {7}Wyniki testów wydajnościowych}{9}{section.7}%
-\contentsline {subsection}{\numberline {7.1}Scenariusze CREATE -- porównanie per scenariusz}{9}{subsection.7.1}%
-\contentsline {subsection}{\numberline {7.2}Scenariusze READ -- porównanie per scenariusz}{10}{subsection.7.2}%
-\contentsline {subsection}{\numberline {7.3}Scenariusze UPDATE -- porównanie per scenariusz}{11}{subsection.7.3}%
-\contentsline {subsection}{\numberline {7.4}Scenariusze DELETE -- porównanie per scenariusz}{12}{subsection.7.4}%
-\contentsline {subsection}{\numberline {7.5}Porównanie: wpływ indeksów na wydajność (skala 1M)}{12}{subsection.7.5}%
-\contentsline {section}{\numberline {8}Wizualizacja wyników}{13}{section.8}%
-\contentsline {section}{\numberline {9}Analiza indeksów}{19}{section.9}%
-\contentsline {subsection}{\numberline {9.1}Zastosowane indeksy}{19}{subsection.9.1}%
-\contentsline {subsection}{\numberline {9.2}Analiza planów zapytań (EXPLAIN)}{19}{subsection.9.2}%
-\contentsline {section}{\numberline {10}Weryfikacja hipotezy badawczej}{20}{section.10}%
-\contentsline {subsection}{\numberline {10.1}Analiza wyników -- PostgreSQL (skala 1M)}{20}{subsection.10.1}%
-\contentsline {subsection}{\numberline {10.2}Wnioski dotyczące hipotezy}{20}{subsection.10.2}%
-\contentsline {section}{\numberline {11}Rozszerzona analiza wyników}{21}{section.11}%
-\contentsline {subsection}{\numberline {11.1}Skalowalność}{21}{subsection.11.1}%
-\contentsline {subsection}{\numberline {11.2}Porównanie modeli danych}{21}{subsection.11.2}%
-\contentsline {subsection}{\numberline {11.3}Dane półustrukturalne (JSON)}{21}{subsection.11.3}%
-\contentsline {subsection}{\numberline {11.4}Automatyzacja testów}{21}{subsection.11.4}%
-\contentsline {section}{\numberline {12}Podsumowanie i wnioski}{21}{section.12}%
+\contentsline {section}{\numberline {1}Cel i zakres pracy}{4}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Hipoteza badawcza}{4}{subsection.1.1}%
+\contentsline {section}{\numberline {2}Opis wybranych systemów zarządzania bazami danych}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}PostgreSQL 16}{4}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}MySQL 8.0}{4}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}MongoDB 7}{5}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Redis 7}{5}{subsection.2.4}%
+\contentsline {section}{\numberline {3}Opis zbioru danych}{5}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Modele danych w systemach nierelacyjnych}{7}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Skale danych testowych}{7}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Opis aplikacji testowej}{7}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Wymagania}{7}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Wykorzystane technologie i narzędzia}{7}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Struktura projektu i opis działania}{8}{subsection.4.3}%
+\contentsline {section}{\numberline {5}Opis scenariuszy testowych}{8}{section.5}%
+\contentsline {section}{\numberline {6}Metodyka pomiaru}{10}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Schemat pomiaru}{10}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Środowisko testowe}{10}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Ograniczenia i zastrzeżenia interpretacyjne}{11}{subsection.6.3}%
+\contentsline {section}{\numberline {7}Wyniki testów wydajnościowych}{11}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Operacja wstawiania danych}{11}{subsection.7.1}%
+\contentsline {paragraph}{Interpretacja wyników.}{13}{figure.caption.10}%
+\contentsline {paragraph}{Interpretacja wyników.}{14}{figure.caption.11}%
+\contentsline {paragraph}{Interpretacja wyników.}{14}{figure.caption.12}%
+\contentsline {subsection}{\numberline {7.2}Operacja odczytu danych}{15}{subsection.7.2}%
+\contentsline {paragraph}{Interpretacja wyników.}{17}{figure.caption.15}%
+\contentsline {paragraph}{Interpretacja wyników.}{18}{figure.caption.16}%
+\contentsline {paragraph}{Interpretacja wyników.}{18}{figure.caption.17}%
+\contentsline {subsection}{\numberline {7.3}Operacja aktualizacji danych}{20}{subsection.7.3}%
+\contentsline {paragraph}{Interpretacja wyników.}{21}{figure.caption.20}%
+\contentsline {paragraph}{Interpretacja wyników.}{22}{figure.caption.21}%
+\contentsline {paragraph}{Interpretacja wyników.}{22}{figure.caption.22}%
+\contentsline {subsection}{\numberline {7.4}Operacja usuwania danych}{24}{subsection.7.4}%
+\contentsline {paragraph}{Interpretacja wyników.}{25}{figure.caption.25}%
+\contentsline {paragraph}{Interpretacja wyników.}{26}{figure.caption.26}%
+\contentsline {paragraph}{Interpretacja wyników.}{26}{figure.caption.27}%
+\contentsline {section}{\numberline {8}Analiza indeksów}{28}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Zastosowane indeksy}{28}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Analiza planów wykonania zapytań}{28}{subsection.8.2}%
+\contentsline {subsubsection}{\numberline {8.2.1}PostgreSQL -- pobranie diagnoz wizyty (10M, złączenie po kluczu obcym)}{28}{subsubsection.8.2.1}%
+\contentsline {subsubsection}{\numberline {8.2.2}PostgreSQL -- wyliczenie sumy kosztów usług (500k, kontrolna analiza planu)}{28}{subsubsection.8.2.2}%
+\contentsline {subsubsection}{\numberline {8.2.3}PostgreSQL -- zmiana ceny wykonanej usługi (aktualizacja po kluczu obcym)}{29}{subsubsection.8.2.3}%
+\contentsline {subsubsection}{\numberline {8.2.4}MySQL 8.0 -- pobranie diagnoz wizyty}{29}{subsubsection.8.2.4}%
+\contentsline {subsubsection}{\numberline {8.2.5}MongoDB -- pobranie wizyt pacjenta z~lekarzem (kolekcja wizyt 2M dok.)}{30}{subsubsection.8.2.5}%
+\contentsline {subsubsection}{\numberline {8.2.6}Wnioski porównawcze}{30}{subsubsection.8.2.6}%
+\contentsline {section}{\numberline {9}Weryfikacja hipotezy badawczej}{30}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Przyspieszenie odczytu ($S_{odczyt}$) -- trend ze skalą}{31}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Spowolnienie zapisu ($K_{zapis}$) -- trend ze skalą}{32}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}Wnioski dotyczące hipotezy}{32}{subsection.9.3}%
+\contentsline {section}{\numberline {10}Podsumowanie i wnioski}{33}{section.10}%

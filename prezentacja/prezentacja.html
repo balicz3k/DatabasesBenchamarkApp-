@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>ZTDB – treść prezentacji (wersja robocza do PowerPointa)</title>
+<style>
+  body { font-family: Calibri, 'Segoe UI', Arial, sans-serif; max-width: 1000px; margin: 24px auto; padding: 0 24px; color: #111; line-height: 1.5; }
+  h1 { font-size: 28px; border-bottom: 3px solid #333; padding-bottom: 8px; }
+  .slide { margin: 48px 0; padding: 20px 24px; border: 1px solid #ccc; background: #fafafa; }
+  .slide h2 { font-size: 22px; color: #1a4d70; margin-bottom: 12px; }
+  .slide h3 { font-size: 14px; text-transform: uppercase; color: #777; margin-top: 18px; margin-bottom: 6px; letter-spacing: 0.5px; }
+  .slide ul, .slide ol { margin-left: 22px; }
+  .slide li { margin: 4px 0; }
+  .slide p { margin: 6px 0; }
+  .slide .notes { background: #fff8d9; border-left: 4px solid #e0b020; padding: 10px 14px; font-style: italic; }
+  .slide table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+  .slide th, .slide td { border: 1px solid #aaa; padding: 5px 8px; text-align: left; }
+  .slide th { background: #e8eef4; }
+  .slide img { max-width: 100%; height: auto; border: 1px solid #ddd; margin-top: 8px; display: block; }
+  .slide pre { background: #f3f3f3; padding: 8px 12px; font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+  .meta { color: #555; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>ZTDB — Analiza wydajności baz danych (treść prezentacji)</h1>
+<p class="meta">Roboczy dokument do kopiowania do PowerPointa. Każda sekcja = jeden slajd. Treść = punkty na slajd. Notatki = tekst do czytania na głos. Wykres = obrazek do wstawienia.</p>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 1 / 23 — Tytuł</h2>
+
+  <h3>Treść:</h3>
+  <p><strong>Analiza wydajności nierelacyjnych i relacyjnych baz danych</strong></p>
+  <p>PostgreSQL 16 · MySQL 8.0 · MongoDB 7 · Redis 7</p>
+  <p>Projekt ZTDB · 24 scenariusze CRUD · skala do 10 000 000 sumarycznych rekordów (2 mln wizyt) · n=3 powtórzeń</p>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Dzień dobry. Przedstawię wyniki empirycznego porównania czterech popularnych baz danych — dwóch relacyjnych (PostgreSQL i MySQL) i dwóch nierelacyjnych (dokumentowa MongoDB oraz klucz-wartość Redis) — w zastosowaniu typowym dla systemu informacji medycznej. Sercem prezentacji są wyniki pomiarów: jak długo trwają operacje CRUD przy różnych skalach danych, jak na to wpływają indeksy i co z tego wynika praktycznie. Cała implementacja benchmarku to drugorzędne tło — najważniejsze są liczby, wykresy i wnioski, które pokazują, w jakich warunkach która baza ma realną przewagę.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 2 / 23 — Cel projektu i hipoteza H1</h2>
+
+  <h3>Treść:</h3>
+  <p><strong>Cel:</strong> Zmierzyć i porównać wydajność CRUD czterech baz na tych samych danych, dla trzech skal (500k, 1M, 10M sumarycznych rekordów; odpowiednio 100k/200k/2M wizyt), z indeksami i bez — i odpowiedzieć, kiedy która baza ma sens.</p>
+  <p><strong>Hipoteza H1:</strong> Indeksy znacząco przyspieszają READ przy akceptowalnym spowolnieniu WRITE.</p>
+  <p>Formalnie:</p>
+  <ul>
+    <li>S<sub>read</sub> = T<sub>no-idx</sub> / T<sub>idx</sub> &gt;&gt; 1 (przyspieszenie READ)</li>
+    <li>K<sub>write</sub> = T<sub>idx</sub> / T<sub>no-idx</sub> ≤ 1.5 (akceptowalny narzut WRITE)</li>
+  </ul>
+  <ul>
+    <li>Oczekiwanie a priori: PostgreSQL i MySQL — duże S<sub>read</sub>; MongoDB — umiarkowane; Redis — zerowe (brak indeksów).</li>
+    <li>Weryfikacja: ilościowa, na podstawie tabel S<sub>read</sub> i K<sub>write</sub> dla każdej kombinacji.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Cel projektu jest pragmatyczny: nie wybrać "najlepszej" bazy, tylko pokazać, w jakich warunkach każda z nich przoduje. Hipoteza H1 jest celowo sformułowana tak, by była falsyfikowalna: jeśli zobaczymy bazę, gdzie indeksy nie przyspieszają READ lub spowalniają WRITE więcej niż 1.5×, H1 dla tej bazy nie zostaje potwierdzona. Próg 1.5× wybrałem jako kompromis literaturowy — typowy "akceptowalny" narzut indeksów to 10–30%. Współczynniki S_read i K_write obliczam jawnie dla każdego scenariusza w skrypcie scripts/analyze_hypothesis.py i prezentuję w tabelach na slajdach 18 i 19.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 3 / 23 — Co testujemy (domena i zakres)</h2>
+
+  <h3>Treść:</h3>
+  <ul>
+    <li><strong>Domena:</strong> system przychodni — 8 tabel SQL, kolekcje BSON, hash/list/zset Redis</li>
+    <li><strong>Bazy:</strong> PostgreSQL 16, MySQL 8, MongoDB 7, Redis 7</li>
+    <li><strong>Skale (sumaryczne rekordy):</strong> 500k · 1M · 10M (wizyt: 100k · 200k · 2M)</li>
+    <li><strong>Scenariusze CRUD:</strong> 24 łącznie (6×CREATE, 6×READ, 6×UPDATE, 6×DELETE)</li>
+  </ul>
+  <h3>24 scenariusze CRUD — szczegóły:</h3>
+
+  <table>
+    <caption style="caption-side:top;text-align:left;font-weight:bold;background:#2e7d32;color:#fff;padding:4px 8px">CREATE — 6 scenariuszy (INSERT)</caption>
+    <thead><tr><th style="width:3em">Nr</th><th>Nazwa scenariusza</th><th>SQL (PG / MySQL)</th><th>MongoDB</th><th>Redis</th></tr></thead>
+    <tbody>
+      <tr><td>C1</td><td><code>insert_patient</code></td><td>INSERT INTO patients</td><td><code>insert_one()</code></td><td>pipeline HSET + SADD</td></tr>
+      <tr><td>C2</td><td><code>insert_visit</code></td><td>INSERT INTO visits (FK)</td><td><code>$push</code> wizyta</td><td>pipeline HSET + SADD</td></tr>
+      <tr><td>C3</td><td><code>insert_diagnosis</code></td><td>INSERT INTO diagnoses</td><td><code>$push</code> diagnoza</td><td>RPUSH na liście</td></tr>
+      <tr><td>C4</td><td><code>insert_prescription_with_items</code></td><td>INSERT recepta + N pozycji</td><td><code>$push</code> recepta + items[]</td><td>pipeline HSET (N+1 kluczy)</td></tr>
+      <tr><td>C5</td><td><code>insert_performed_service</code></td><td>INSERT performed_services</td><td><code>$push</code> usługa</td><td>HSET + HINCRBYFLOAT (suma)</td></tr>
+      <tr><td>C6</td><td><code>insert_test_result</code></td><td>INSERT test_results</td><td><code>$push</code> wynik</td><td>HSET mapping</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption style="caption-side:top;text-align:left;font-weight:bold;background:#1565c0;color:#fff;padding:4px 8px">READ — 6 scenariuszy (SELECT / find / GET)</caption>
+    <thead><tr><th style="width:3em">Nr</th><th>Nazwa scenariusza</th><th>SQL (PG / MySQL)</th><th>MongoDB</th><th>Redis</th></tr></thead>
+    <tbody>
+      <tr><td>R1</td><td><code>select_patient_by_id</code></td><td>SELECT po PK</td><td><code>find_one</code> po <code>_id</code></td><td>HGETALL <code>patient:{id}</code></td></tr>
+      <tr><td>R2</td><td><code>select_visits_with_doctor</code></td><td>JOIN visits + doctors</td><td><code>find + projection</code></td><td>SMEMBERS + pipeline GET/HGETALL</td></tr>
+      <tr><td>R3</td><td><code>select_visit_diagnoses</code></td><td>JOIN diagnoses + diseases</td><td>aggregate <code>$unwind</code></td><td>LRANGE + pipeline EXISTS</td></tr>
+      <tr><td>R4</td><td><code>select_patient_full_history</code></td><td>Multi-JOIN (3 tabele)</td><td><code>find_one</code> + projection</td><td>2-fazowy pipeline (HGETALL+SMEMBERS → GET+LRANGE)</td></tr>
+      <tr><td>R5</td><td><code>select_aggregated_costs</code></td><td>SUM + GROUP BY</td><td>aggregate pipeline</td><td>SMEMBERS + batch HGETALL + SUM</td></tr>
+      <tr><td>R6</td><td><code>select_prescriptions_with_meds</code></td><td>Triple JOIN</td><td><code>find_one</code> + projection</td><td>SMEMBERS + pipeline GET + HGETALL</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption style="caption-side:top;text-align:left;font-weight:bold;background:#ef6c00;color:#fff;padding:4px 8px">UPDATE — 6 scenariuszy</caption>
+    <thead><tr><th style="width:3em">Nr</th><th>Nazwa scenariusza</th><th>Cel</th><th>Kategoria</th></tr></thead>
+    <tbody>
+      <tr><td>U1</td><td><code>update_patient_name</code></td><td>Zmiana nazwiska pacjenta po <code>id</code></td><td>encja główna</td></tr>
+      <tr><td>U2</td><td><code>update_visit_status</code></td><td>Zmiana statusu wizyty po <code>id</code></td><td>transakcyjna</td></tr>
+      <tr><td>U3</td><td><code>update_service_price</code></td><td>Zmiana ceny usługi po <code>visit_id</code> (wielowierszowy w SQL)</td><td>wsadowa</td></tr>
+      <tr><td>U4</td><td><code>update_diagnosis_notes</code></td><td>Aktualizacja notatki diagnozy po <code>visit_id</code></td><td>transakcyjna</td></tr>
+      <tr><td>U5</td><td><code>update_doctor_license</code></td><td>Zmiana numeru licencji lekarza</td><td>słownikowa</td></tr>
+      <tr><td>U6</td><td><code>update_department_phone</code></td><td>Zmiana telefonu oddziału</td><td>słownikowa</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption style="caption-side:top;text-align:left;font-weight:bold;background:#c62828;color:#fff;padding:4px 8px">DELETE — 6 scenariuszy</caption>
+    <thead><tr><th style="width:3em">Nr</th><th>Nazwa scenariusza</th><th>Cel</th><th>Kaskada</th></tr></thead>
+    <tbody>
+      <tr><td>D1</td><td><code>delete_test_result</code></td><td>Usunięcie pojedynczego wyniku badania</td><td>—</td></tr>
+      <tr><td>D2</td><td><code>delete_diagnosis</code></td><td>Usunięcie pojedynczej diagnozy</td><td>—</td></tr>
+      <tr><td>D3</td><td><code>delete_patient</code></td><td>Usunięcie pacjenta</td><td>kaskada przez visits→*</td></tr>
+      <tr><td>D4</td><td><code>delete_performed_service</code></td><td>Usunięcie wpisu wykonanej usługi</td><td>—</td></tr>
+      <tr><td>D5</td><td><code>delete_prescription</code></td><td>Usunięcie recepty</td><td>kaskada → prescription_items</td></tr>
+      <tr><td>D6</td><td><code>delete_visit_cascade</code></td><td>Usunięcie wizyty z wszystkimi dziećmi</td><td><strong>4× ON DELETE CASCADE</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Domena to klasyczny system przychodni: pacjenci, wizyty, diagnozy ICD-10, recepty z lekami, wyniki badań. Schemat ma integralność referencyjną w wariancie SQL (klucze obce z ON DELETE CASCADE) — to ważne, bo wpływa na koszt DELETE. MongoDB modeluje to dokumentem z embedded diagnozami, usługami i receptami, więc kaskada jest "darmowa". Redis nie ma w ogóle relacji — wszystko trzymane jako hash po kluczu patient:{id}. Pięć skal razy cztery bazy razy 24 scenariusze razy dwa warianty (z indeksami i bez) razy n=3 daje rząd kilku tysięcy pomiarów. Scenariusze są dobierane tak, by reprezentować realne wzorce: prosty lookup po PK, JOIN z lekarzem, kaskadowe usunięcie wizyty i tak dalej.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 3a / 23 — Schemat danych: relacyjny vs dokumentowy vs klucz-wartość</h2>
+
+  <h3>Model relacyjny (PostgreSQL / MySQL) — 13 tabel, 12 FK (4× ON DELETE CASCADE):</h3>
+  <svg viewBox="0 0 920 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:920px;background:#fafafa;border:1px solid #ccc;border-radius:4px;font-family:monospace;font-size:11px">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#1a4d8f"/>
+      </marker>
+      <marker id="arrC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#c0392b"/>
+      </marker>
+    </defs>
+    <!-- dictionaries (top row) -->
+    <g>
+      <rect x="20"  y="10" width="120" height="42" rx="4" fill="#e8f5e9" stroke="#558b58"/>
+      <text x="80"  y="26" text-anchor="middle" font-weight="bold">departments</text>
+      <text x="80"  y="42" text-anchor="middle">id, name, phone</text>
+
+      <rect x="160" y="10" width="120" height="42" rx="4" fill="#e8f5e9" stroke="#558b58"/>
+      <text x="220" y="26" text-anchor="middle" font-weight="bold">specializations</text>
+      <text x="220" y="42" text-anchor="middle">id, name</text>
+
+      <rect x="490" y="10" width="120" height="42" rx="4" fill="#e8f5e9" stroke="#558b58"/>
+      <text x="550" y="26" text-anchor="middle" font-weight="bold">diseases</text>
+      <text x="550" y="42" text-anchor="middle">id, icd10, name</text>
+
+      <rect x="630" y="10" width="130" height="42" rx="4" fill="#e8f5e9" stroke="#558b58"/>
+      <text x="695" y="26" text-anchor="middle" font-weight="bold">medical_services</text>
+      <text x="695" y="42" text-anchor="middle">id, name, price</text>
+
+      <rect x="780" y="10" width="120" height="42" rx="4" fill="#e8f5e9" stroke="#558b58"/>
+      <text x="840" y="26" text-anchor="middle" font-weight="bold">medications</text>
+      <text x="840" y="42" text-anchor="middle">id, name, substance</text>
+    </g>
+    <!-- main entities -->
+    <g>
+      <rect x="80"  y="110" width="160" height="56" rx="4" fill="#ffe9cc" stroke="#c8762e" stroke-width="1.5"/>
+      <text x="160" y="128" text-anchor="middle" font-weight="bold">doctors</text>
+      <text x="160" y="144" text-anchor="middle">id, dept_id (FK), spec_id (FK)</text>
+      <text x="160" y="158" text-anchor="middle">first_name, last_name, license</text>
+
+      <rect x="380" y="110" width="160" height="56" rx="4" fill="#ffe9cc" stroke="#c8762e" stroke-width="1.5"/>
+      <text x="460" y="128" text-anchor="middle" font-weight="bold">patients</text>
+      <text x="460" y="144" text-anchor="middle">id, national_id, gender</text>
+      <text x="460" y="158" text-anchor="middle">first_name, last_name, birth_date</text>
+    </g>
+    <!-- transactional -->
+    <g>
+      <rect x="320" y="200" width="170" height="48" rx="4" fill="#e3f2fd" stroke="#1a4d8f"/>
+      <text x="405" y="218" text-anchor="middle" font-weight="bold">visits</text>
+      <text x="405" y="234" text-anchor="middle">id, patient_id (FK), doctor_id (FK)</text>
+      <text x="405" y="246" text-anchor="middle">visit_date, status</text>
+    </g>
+    <g>
+      <rect x="10"  y="290" width="150" height="58" rx="4" fill="#e3f2fd" stroke="#1a4d8f"/>
+      <text x="85"  y="306" text-anchor="middle" font-weight="bold">performed_services</text>
+      <text x="85"  y="320" text-anchor="middle">visit_id (FK,C), service_id (FK)</text>
+      <text x="85"  y="334" text-anchor="middle">quantity, final_price</text>
+
+      <rect x="170" y="290" width="130" height="58" rx="4" fill="#e3f2fd" stroke="#1a4d8f"/>
+      <text x="235" y="306" text-anchor="middle" font-weight="bold">diagnoses</text>
+      <text x="235" y="320" text-anchor="middle">visit_id (FK,C)</text>
+      <text x="235" y="334" text-anchor="middle">disease_id (FK), notes</text>
+
+      <rect x="310" y="290" width="140" height="58" rx="4" fill="#e3f2fd" stroke="#1a4d8f"/>
+      <text x="380" y="306" text-anchor="middle" font-weight="bold">prescriptions</text>
+      <text x="380" y="320" text-anchor="middle">visit_id (FK,C)</text>
+      <text x="380" y="334" text-anchor="middle">prescription_code, issue_date</text>
+
+      <rect x="460" y="290" width="130" height="58" rx="4" fill="#e3f2fd" stroke="#1a4d8f"/>
+      <text x="525" y="306" text-anchor="middle" font-weight="bold">test_results</text>
+      <text x="525" y="320" text-anchor="middle">visit_id (FK,C)</text>
+      <text x="525" y="334" text-anchor="middle">parameter, value, unit</text>
+
+      <rect x="600" y="290" width="170" height="58" rx="4" fill="#e3f2fd" stroke="#1a4d8f"/>
+      <text x="685" y="306" text-anchor="middle" font-weight="bold">prescription_items</text>
+      <text x="685" y="320" text-anchor="middle">prescription_id (FK,C)</text>
+      <text x="685" y="334" text-anchor="middle">medication_id (FK), dosage</text>
+    </g>
+    <!-- arrows -->
+    <g stroke="#1a4d8f" fill="none" stroke-width="1.2">
+      <path d="M120,110 L80,55" marker-end="url(#arr)"/>
+      <path d="M180,110 L220,55" marker-end="url(#arr)"/>
+      <path d="M420,110 L420,80 L420,80" marker-end="url(#arr)"/>
+      <path d="M380,200 L240,166" marker-end="url(#arr)"/>
+      <path d="M430,200 L460,166" marker-end="url(#arr)"/>
+    </g>
+    <g stroke="#c0392b" fill="none" stroke-width="1.4">
+      <path d="M85,290 L380,250" marker-end="url(#arrC)"/>
+      <path d="M235,290 L395,250" marker-end="url(#arrC)"/>
+      <path d="M380,290 L405,250" marker-end="url(#arrC)"/>
+      <path d="M525,290 L420,250" marker-end="url(#arrC)"/>
+      <path d="M685,290 L450,250" marker-end="url(#arrC)"/>
+    </g>
+    <g font-size="10">
+      <rect x="600" y="80" width="160" height="24" rx="3" fill="#fff" stroke="#999"/>
+      <text x="608" y="96" fill="#1a4d8f">→</text>
+      <text x="622" y="96">FK (RESTRICT)</text>
+      <text x="708" y="96" fill="#c0392b">→</text>
+      <text x="720" y="96">FK ON DELETE CASCADE</text>
+    </g>
+  </svg>
+
+  <h3>Model dokumentowy (MongoDB) — embed visits→{services,diagnoses,prescriptions,tests}:</h3>
+  <pre style="font-size:11px;line-height:1.3">{
+  "_id": 12345, "national_id": "90010112345",
+  "first_name": "Anna", "last_name": "Kowalska", "gender": "F",
+  "visits": [{
+    "visit_id": 9876, "doctor_id": 42, "visit_date": "2024-05-12", "status": "completed",
+    "performed_services": [{"service_id": 7, "quantity": 1, "final_price": 120.00}],
+    "diagnoses":          [{"disease_id": 314, "diagnosis_type": "main", "notes": "..."}],
+    "prescriptions":      [{"prescription_code": "RX-...", "items": [{"medication_id": 88, "dosage": "..."}]}],
+    "test_results":       [{"parameter_name": "HGB", "result_value": 13.4, "unit": "g/dL"}]
+  }]
+}</pre>
+  <p style="font-size:0.9em">Słowniki (<code>doctors</code>, <code>diseases</code>, <code>medical_services</code>, <code>medications</code>, <code>departments</code>, <code>specializations</code>) jako osobne, płaskie kolekcje; referencje po ID, bez wymuszania.</p>
+
+  <h3>Model klucz-wartość (Redis) — wzorce kluczy + SET jako odwrotne indeksy:</h3>
+  <pre style="font-size:11px;line-height:1.3">patient:{id}              HASH  { national_id, first_name, last_name, birth_date, gender }
+visit:{id}                HASH  { patient_id, doctor_id, visit_date, status }
+session:doctor:{id}       HASH  { first_name, last_name, dept_id, spec_id }
+prescription:{id}         HASH  { visit_id, prescription_code, issue_date }
+service:total:{vid}       HASH  { total_price, item_count }
+
+patient:visits:{pid}      SET   { visit_id, visit_id, ... }       ← zastępuje JOIN visits.patient_id
+visit:prescriptions:{vid} SET   { prescription_id, ... }          ← zastępuje JOIN prescriptions.visit_id
+visit:diagnoses:{vid}     SET   { diagnosis_id, ... }
+visit:services:{vid}      SET   { performed_service_id, ... }</pre>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Ten slajd pokazuje, jak ta sama dziedzina jest zapisywana w trzech różnych paradygmatach. W modelu relacyjnym mamy 13 znormalizowanych tabel — pomarańczowe to encje główne (patients, doctors), niebieskie to transakcje (visits i jej dzieci), zielone to słowniki. Czerwone strzałki pokazują ON DELETE CASCADE — usunięcie wizyty automatycznie kaskaduje na performed_services, diagnoses, prescriptions, test_results, a dalej na prescription_items. W MongoDB cała ta hierarchia mieści się w jednym dokumencie pacjenta — wizyty są zagnieżdżone jako tablica, a w każdej wizycie tablice usług, diagnoz, recept z pozycjami. Kaskada jest "darmowa" — usunięcie wizyty to operator $pull na tablicy. Limit: 16 MB BSON, dlatego cap 200 wizyt na pacjenta. W Redis nie ma żadnego schematu — wszystkie relacje, które w SQL załatwia FK i JOIN, muszą być utrzymywane ręcznie jako osobne SET-y typu patient:visits:{pid}. To daje O(1) dostęp po znanym kluczu, ale wymaga aplikacyjnej dyscypliny — usunięcie wizyty wymaga ręcznego SREM z indeksów, bo nikt tego za nas nie zrobi. To wyjaśnia, dlaczego później widzimy w benchmarkach takie drastyczne różnice w kosztach JOIN-ów i kaskadowych DELETE między PG/MySQL a MongoDB/Redis.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 4 / 23 — Metodologia w skrócie</h2>
+
+  <h3>Treść:</h3>
+  <ul>
+    <li><strong>Powtórzenia:</strong> n = 3 + 1 warmup (nie liczony)</li>
+    <li><strong>Miara główna:</strong> średnia arytmetyczna + odchylenie standardowe (mediana zapisana w CSV kontrolnie)</li>
+    <li><strong>Reprodukowalność:</strong> seed = 42, deterministyczny generator</li>
+    <li><strong>Środowisko:</strong> Docker localhost, scenariusze uruchamiane sekwencyjnie</li>
+    <li><strong>Pomiar:</strong> time.perf_counter() obejmujący jedną operację CRUD; seria 3 prób → średnia + σ</li>
+    <li><strong>Konfiguracja silników:</strong> PostgreSQL shared_buffers=2GB, MySQL innodb_buffer_pool=4GB, MongoDB wiredTigerCache=4GB, Redis maxmemory=10GB, persystencja off</li>
+    <li><strong>Izolacja pomiaru (_run_split):</strong> mierzony jest WYŁĄCZNIE czas operacji docelowej (np. sam INSERT dla CREATE); setup i teardown (np. DELETE sprzątający) są wykonywane poza pomiarem</li>
+    <li><strong>Wyjście:</strong> CSV-y, wykresy PNG, raport EXPLAIN ANALYZE dla PG, sprawozdanie LaTeX</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Trzy uwagi metodologiczne. Po pierwsze, n=3 to świadomy kompromis — uczciwe testy statystyczne typu t-Studenta czy ANOVA wymagałyby n większego lub równego 30. Różnice poniżej pięciu procent między bazami traktuję jako szum. Po drugie, konfiguracje bazy są tunowane realistycznie — to nie są domyślne ustawienia, tylko rozsądny tuning dla maszyny z 16 GB RAM. Dzięki temu MySQL ma 4 GB Buffer Pool, co istotnie wpływa na wyniki. Po trzecie — kluczowe — każdy scenariusz korzysta z mechanizmu _run_split: mierzony jest tylko czas operacji docelowej. Dla CREATE oznacza to czysty INSERT bez doliczania kosztu sprzątającego DELETE; ten ostatni biegnie w teardownie i nie wchodzi do średniej. Dzięki temu nie ma już sztucznego „paradoksu PG INSERT” z poprzedniej wersji benchmarku — wyniki INSERT są odizolowane i porównywalne wprost między bazami.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 5 / 23 — Wyniki CREATE @ 10M sumarycznych rekordów (2M wizyt)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>Indeks</th><th>PG</th><th>MySQL</th><th>MongoDB</th><th>Redis</th></tr></thead>
+    <tbody>
+      <tr><td>insert_patient</td><td>no_idx</td><td>1.37 ms</td><td>4.42 ms</td><td>0.69 ms</td><td>0.47 ms</td></tr>
+      <tr><td>insert_patient</td><td>idx</td><td>1.05 ms</td><td>3.14 ms</td><td>0.73 ms</td><td>—</td></tr>
+      <tr><td>insert_visit</td><td>no_idx</td><td>1.20 ms</td><td>2.75 ms</td><td>0.82 ms</td><td>0.46 ms</td></tr>
+      <tr><td>insert_visit</td><td>idx</td><td><strong>1.62 ms (K_write=1.34×)</strong></td><td>3.44 ms (1.25×)</td><td>0.90 ms</td><td>—</td></tr>
+      <tr><td>insert_prescription_with_items</td><td>no_idx</td><td>2.42 ms</td><td>8.01 ms</td><td>—</td><td>—</td></tr>
+      <tr><td>insert_diagnosis (liść)</td><td>no_idx</td><td>1.03 ms</td><td>—</td><td>—</td><td>—</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Kluczowe obserwacje:</h3>
+  <ul>
+    <li><strong>INSERT odizolowany od teardownu:</strong> dzięki refaktorowi _run_split mierzony jest wyłącznie czas operacji docelowej — czyszczący DELETE nie wchodzi do średniej. Stary „paradoks PG INSERT −98%” znika.</li>
+    <li><strong>Klasyczne spowolnienie indeksami:</strong> insert_visit w PG 1.20 ms bez idx → 1.62 ms z idx (K_write = 1.34×); MySQL 2.75 → 3.44 ms (1.25×). Oba poniżej progu 1.5× z H1.</li>
+    <li><strong>Bazy NoSQL/key-value:</strong> Mongo i Redis stabilne w przedziale 0.4–0.9 ms niezależnie od skali — brak JOIN-ów i brak narzutu B-tree dla zapisu po PK.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Najważniejsza zmiana względem poprzedniej wersji benchmarku: nie ma już spektakularnego „paradoksu PG INSERT”. W starym każdy CREATE był round-tripem INSERT+DELETE i bez indeksów na FK koszt DELETE wystrzeliwał do ponad 100 ms. Po refaktorze _run_split mierzymy WYŁĄCZNIE czas operacji docelowej — sam INSERT — a czyszczący DELETE wykonuje się poza pomiarem w fazie teardown. W efekcie insert_visit przy 10M sumarycznych rekordów wynosi w PG 1.20 ms bez indeksów i 1.62 ms z indeksami. To klasyczne spowolnienie indeksami: K_write = 1.34×, dokładnie w przedziale przewidywanym przez H1. MySQL pokazuje to samo: 2.75 → 3.44 ms, K_write = 1.25×. Mongo i Redis pozostają w okolicy 0.7–0.9 ms — ich silniki zapisu nie mają narzutu porównywalnego z B-tree relacyjnych baz przy wstawianiu pojedynczego rekordu po PK.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 6 / 23 — CREATE: porównanie wszystkich baz (10M sumarycznych, 2M wizyt, bez indeksów)</h2>
+
+  <h3>Treść:</h3>
+  <p>Wykres CRUD dla 10 M sumarycznych rekordów (2 M wizyt), wszystkie 24 scenariusze, wariant bez indeksów. Skala logarytmiczna.</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/crud_comparison_10000000_bez_indeksow.png</p>
+  <img src="../results/charts/crud_comparison_10000000_bez_indeksow.png" alt="CRUD comparison 10M bez indeksów">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Ten wykres pokazuje w jednym rzucie wszystkie 24 scenariusze CRUD przy 10 M sumarycznych rekordów (2 M wizyt), bez indeksów. Cztery rzeczy do zauważenia. Po pierwsze, Redis i MongoDB tworzą „dolne pasmo” 0.4–1 ms — kluczowo-wartościowy i dokumentowy paradygmat nie cierpią na koszt JOIN. Po drugie, górne słupki to scenariusze PG związane z kluczami obcymi: delete_visit_cascade 220 ms, select_patient_full_history 84 ms, update_service_price 67 ms — wszystkie wymagające Seq Scan po tabelach-dzieciach lub po FK. Po trzecie, MySQL siedzi w środku — wolniejszy od Mongo, ale dużo szybszy od PG bez indeksów dzięki buforowaniu InnoDB. Po czwarte, operacje liście jak insert_diagnosis, update_doctor_license, delete_test_result są wszędzie podobne — to baseline czasu dla operacji bez kaskady. Ten obraz uzasadnia tezę: bez indeksów PostgreSQL nie nadaje się do produkcji przy 2 M wizyt. Indeksy nie są opcjonalne.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 7 / 23 — READ bez indeksów (trend skalowania)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>Baza</th><th>500k</th><th>1M</th><th>10M</th><th>Trend</th></tr></thead>
+    <tbody>
+      <tr><td>select_aggregated_costs</td><td>PG</td><td>9.14 ms</td><td>15.33 ms</td><td><strong>82.22 ms</strong></td><td>O(n), 9×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>PG</td><td>4.38 ms</td><td>7.16 ms</td><td><strong>44.17 ms</strong></td><td>O(n), 10×</td></tr>
+      <tr><td>select_patient_full_history</td><td>PG</td><td>9.19 ms</td><td>18.12 ms</td><td><strong>83.69 ms</strong></td><td>O(n), 9×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>MySQL</td><td>1.36 ms</td><td>1.53 ms</td><td>1.39 ms</td><td>stabilny (BP)</td></tr>
+      <tr><td>select_patient_full_history</td><td>MongoDB</td><td>0.83 ms</td><td>0.73 ms</td><td>0.80 ms</td><td>≈ O(1)</td></tr>
+      <tr><td>select_patient_by_id</td><td>Redis</td><td>0.43 ms</td><td>0.43 ms</td><td>0.41 ms</td><td>O(1)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Wnioski:</h3>
+  <ul>
+    <li>PostgreSQL bez indeksów = liniowy wzrost O(n). select_patient_full_history rośnie z 9.19 ms @500k do 83.69 ms @10M (~9×) — Seq Scan + JOIN bez wsparcia indeksu.</li>
+    <li>MySQL stabilny między skalami — InnoDB Buffer Pool (4 GB) buforuje aktywny zbiór; efekt skali maskowany do 10 M sumarycznych rekordów.</li>
+    <li>MongoDB i Redis — dostęp po _id/kluczu jest natywnie indeksowany; brak JOIN = brak kosztu skanowania.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Najważniejsza linia tabeli: PostgreSQL bez indeksów dla select_patient_full_history rośnie z 9.19 ms @500k do 83.69 ms @10M — to około 9-krotny wzrost przy 20-krotnym wzroście sumarycznych rekordów. Idealny przykład O(n) z dominacją JOIN po nieindeksowanej kolumnie. To samo zapytanie z indeksami, które zobaczymy za chwilę, działa w okolicach 1–4 ms niemal niezależnie od skali. MySQL przez długi czas wygląda lepiej, ale to iluzja — InnoDB Buffer Pool ma 4 GB i trzyma w pamięci aktywny zbiór roboczy. To ważny wniosek: szybki bez indeksów nie znaczy nie potrzebuje indeksów — to znaczy ma ukryte buforowanie, które tej skali jeszcze nie wyczerpało. Redis pozostaje płaski jak linijka — O(1) na HGET.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 8 / 23 — READ z indeksami (przyspieszenie)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>Baza</th><th>500k</th><th>1M</th><th>10M</th><th>S_read max</th></tr></thead>
+    <tbody>
+      <tr><td>select_visit_diagnoses</td><td>PG</td><td>0.45 ms</td><td>0.52 ms</td><td>0.53 ms</td><td><strong>88.47×</strong></td></tr>
+      <tr><td>select_prescriptions_with_meds</td><td>PG</td><td>1.86 ms</td><td>0.54 ms</td><td>0.56 ms</td><td>86.50×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>PG</td><td>0.50 ms</td><td>0.55 ms</td><td>0.93 ms</td><td>47.34×</td></tr>
+      <tr><td>select_aggregated_costs</td><td>PG</td><td>14.92 ms</td><td>0.65 ms</td><td>2.80 ms</td><td>29.32×</td></tr>
+      <tr><td>select_patient_full_history</td><td>PG</td><td>5.58 ms</td><td>0.82 ms</td><td>3.95 ms</td><td>22.09×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>MongoDB</td><td>1.36 ms</td><td>1.41 ms</td><td>1.39 ms</td><td>6.18× @10M</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>MySQL</td><td>1.43 ms</td><td>1.40 ms</td><td>1.38 ms</td><td>~1.0× (BP)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Wnioski:</h3>
+  <ul>
+    <li>PostgreSQL z indeksami: wszystkie scenariusze READ pozostają poniżej 4 ms przy 10 M sumarycznych. Maksymalne przyspieszenie 88.47× dla select_visit_diagnoses @10M.</li>
+    <li>Trend O(log n) potwierdzony empirycznie: 20× więcej danych (500k→10M) → wzrost czasu jedynie kilkukrotny, w większości scenariuszy < 2×.</li>
+    <li>MongoDB osiąga 6.18× @10M dla select_visits_with_doctor dzięki indeksowi na visits.doctor_id; MySQL minimalny wpływ (Buffer Pool buforuje całość).</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">To jest dowód H1 dla PostgreSQL. Porównajcie z poprzednim slajdem: select_visit_diagnoses przy 10 M bez indeksów to 46.77 ms, z indeksami 0.53 ms — 88.47 razy szybciej. To najmocniejszy wynik całego benchmarku. Drugi w kolejności select_prescriptions_with_meds osiąga 86.5×. Trend O(log n) widać natychmiast: PG z indeksami przy 10 M dla większości scenariuszów wciąż w okolicach 0.5–4 ms. To dokładnie krzywa logarytmiczna. MySQL pokazuje minimalny efekt — wynika to z faktu, że Buffer Pool i tak buforuje całość, indeksy nie mają z czego ratować. MongoDB ma realny zysk 6.18× @10M dla select_visits_with_doctor, gdzie indeks na doctor_id pozwala uniknąć collection scan po 2 milionach wizyt.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 9 / 23 — Wpływ indeksów: PostgreSQL @ 10M (2M wizyt)</h2>
+
+  <h3>Treść:</h3>
+  <p>Czas każdego scenariusza w wariancie no_idx vs idx. Im większa różnica, tym większy zysk z indeksu.</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/index_impact_PostgreSQL_10000000.png</p>
+  <img src="../results/charts/index_impact_PostgreSQL_10000000.png" alt="Index impact PostgreSQL 10M">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">PostgreSQL — gwiazda indeksów. Na tym wykresie czerwone słupki, bez indeksów, dla SELECT i delete_visit_cascade są dramatycznie wyższe od zielonych z indeksami. Najważniejsze scenariusze: select_visit_diagnoses spada z 46.77 ms do 0.53 ms (88×), select_prescriptions_with_meds z 48 do 0.56 ms (86×), delete_visit_cascade z 220 do 1.05 ms (~210×), update_service_price z 67 do 1.05 ms (~64×). To jest właśnie obraz, dla którego warto utrzymywać indeksy na wszystkich kluczach obcych: zyskujesz rząd wielkości na READ, UPDATE z WHERE po FK i DELETE rodzica, płacisz jedynie 25–85% narzutu na zapis po PK.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 10 / 23 — Wpływ indeksów: MySQL @ 10M (2M wizyt)</h2>
+
+  <h3>Treść:</h3>
+  <p>MySQL: efekt indeksów znacznie mniej dramatyczny — InnoDB Buffer Pool maskuje korzyść na READ.</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/index_impact_MySQL_10000000.png</p>
+  <img src="../results/charts/index_impact_MySQL_10000000.png" alt="Index impact MySQL 10M">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Porównajcie ten wykres z poprzednim PG. Tu różnice między czerwonym a zielonym są wyraźnie mniejsze. Najwyraźniejszy zysk z indeksu: delete_visit_cascade z 2.61 do 2.85 ms — minimalny, bo InnoDB i tak indeksuje FK domyślnie. Większość SELECT-ów ma czerwone i zielone słupki niemal równej wysokości — co potwierdza tezę: InnoDB Buffer Pool 4 GB buforuje aktywny zbiór, więc Sequential Scan jest w RAM-ie i prawie tak szybki jak Index Scan. Dla MySQL realna nauka: indeksy są kluczowe dla DELETE z kaskadą (ale tu InnoDB robi to za nas), na READ przy datasetach mieszczących się w Buffer Pool zysk jest umiarkowany.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 11 / 23 — Wpływ indeksów: MongoDB @ 10M (2M wizyt)</h2>
+
+  <h3>Treść:</h3>
+  <p>MongoDB: indeksy pomagają głównie zapytaniom po polach niezagnieżdżonych (np. doctor_id); kaskada zarządzana w aplikacji.</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/index_impact_MongoDB_10000000.png</p>
+  <img src="../results/charts/index_impact_MongoDB_10000000.png" alt="Index impact MongoDB 10M">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">MongoDB to pośrednia kategoria efektu indeksów. Trzy istotne obserwacje. Po pierwsze, SELECT-y po _id są niezmienne — IDHACK natywnie omija planner — więc tu nie ma czerwonych słupków wartych uwagi. Po drugie, złożone zapytania aggregate, jak select_visits_with_doctor, zyskują 6.18× przy 10 M z indeksami na doctor_id. Po trzecie, DELETE w MongoDB pokazuje minimalną różnicę — kaskada nie istnieje, bo dzieci są embedded, operacja deleteOne usuwa cały dokument za jednym razem. Ograniczenie: kolekcja patients została zamknięta na 800k dokumentów (MAX_VISITS_PER_PATIENT=200) z powodu limitu 16 MB BSON na dokument.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 12 / 23 — Wpływ indeksów: Redis @ 10M (2M wizyt)</h2>
+
+  <h3>Treść:</h3>
+  <p>Redis: czerwone i zielone słupki identyczne — Redis nie ma indeksów, więc wariant "z indeksami" to ten sam test.</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/index_impact_Redis_10000000.png</p>
+  <img src="../results/charts/index_impact_Redis_10000000.png" alt="Index impact Redis 10M">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Ten wykres celowo wygląda jak placeholder: niemal identyczne słupki. To nie błąd — to wynik. Redis fundamentalnie nie ma indeksów, poza Sorted Setami i RediSearch w wersji enterprise, których nie używamy. Każda operacja CRUD to dostęp po jawnym kluczu — HGET patient:42 name. Wahania plus minus 9 procent to czysty szum systemowy. Wniosek: Redis nie jest w grze "indeksy vs brak" — jest w innej lidze. Operuje wyłącznie w RAM, ma O(1) na HGET/HSET, i to czyni go niedoścignionym na każdym scenariuszu, gdzie znamy klucz. Kosztem są wszystkie funkcje, których brak: JOIN-y, agregacje, transakcje ACID. To uzasadnia rolę Redis w realnym systemie — warstwa cache, nie zamiennik bazy podstawowej.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 13 / 23 — Wyniki UPDATE @ 10M (z indeksami)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>PG no_idx</th><th>PG idx</th><th>MySQL idx</th><th>MongoDB</th><th>Redis</th><th>Obserwacja</th></tr></thead>
+    <tbody>
+      <tr><td>update_visit_status</td><td>1.05 ms</td><td>1.92 ms</td><td>2.29 ms (1.39×)</td><td>0.70 ms</td><td>0.38 ms</td><td>K_write=1.83× — klasyczne spowolnienie</td></tr>
+      <tr><td>update_service_price</td><td><strong>67.31 ms</strong></td><td><strong>1.05 ms</strong></td><td>—</td><td>—</td><td>—</td><td>K_write=0.02× — Index Scan w WHERE</td></tr>
+      <tr><td>update_diagnosis_notes</td><td><strong>68.44 ms</strong></td><td><strong>1.13 ms</strong></td><td>—</td><td>—</td><td>—</td><td>K_write=0.02× — indeks na FK</td></tr>
+      <tr><td>update_patient_name</td><td>1.03 ms</td><td>~1.0 ms</td><td>~1 ms</td><td>~0.7 ms</td><td>~0.4 ms</td><td>Lookup po PK — neutralny</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Wnioski:</h3>
+  <ul>
+    <li><strong>Dwa reżimy K_write w PG:</strong> dla zapisu po PK — klasyczne spowolnienie indeksami (update_visit_status 1.83× @10M, w granicy H1=1.5× przekroczonej minimalnie); dla UPDATE z WHERE po FK — dramatyczne PRZYSPIESZENIE (0.02×) bo indeks lokalizuje rekord zamiast Seq Scan.</li>
+    <li>update_service_price PG: 67.31 ms bez idx → 1.05 ms z idx — to nie paradoks, lecz oczekiwany efekt indeksu w klauzuli filtrującej.</li>
+    <li>MySQL: K_write=1.39× dla update_visit_status — w granicy progu 1.5×.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">UPDATE w PG przy 10 M pokazuje dwa zupełnie różne reżimy K_write. Pierwszy klasyczny: update_visit_status (lookup po PK) ma K_write = 1.83× — indeksy spowalniają zapis, bo trzeba zaktualizować wpisy w drzewie. To minimalne przekroczenie progu 1.5× z H1, w pełni zgodne z oczekiwaniami. Drugi reżim, dużo bardziej dramatyczny: update_service_price ma K_write = 0.02×, bo bez indeksów PG wykonuje Seq Scan po 10 M rekordów w klauzuli WHERE (67 ms), a z indeksem na FK od razu lokalizuje rekord (1 ms). Identyczny mechanizm dla update_diagnosis_notes — też 0.02×. To nie jest „paradoks” — to oczekiwany efekt indeksu w klauzuli filtrującej. Lekcja: H1 potwierdza się w obu reżimach — indeksy są albo neutralne, albo przyśpieszające, w zależności od tego czy WHERE trafia w indeks.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 14 / 23 — Wyniki DELETE @ 10M (efekt kaskady FK)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz (10M)</th><th>PG no_idx</th><th>PG idx</th><th>MySQL no_idx</th><th>MongoDB</th><th>Redis</th><th>Zysk PG z idx</th></tr></thead>
+    <tbody>
+      <tr><td><strong>delete_visit_cascade</strong> (4 dzieci)</td><td>219.9 ms</td><td>1.05 ms</td><td>2.61 ms</td><td>0.74 ms</td><td>0.38 ms</td><td><strong>~210×</strong></td></tr>
+      <tr><td>delete_patient (1 dziecko)</td><td>73.76 ms</td><td>~0.98 ms</td><td>—</td><td>—</td><td>—</td><td>~75×</td></tr>
+      <tr><td>delete_prescription (1 dziecko)</td><td>58.58 ms</td><td>~1.0 ms</td><td>—</td><td>—</td><td>—</td><td>~60×</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Wnioski:</h3>
+  <ul>
+    <li>Bez indeksów na FK — PG 219.9 ms / kaskadę: 4× Seq Scan tabel-dzieci na każdy DELETE — dyskwalifikujące w produkcji przy 10 M.</li>
+    <li>Z indeksami na FK — 1.05 ms (~210× szybciej): Index Scan zamiast Seq Scan — największy zysk z indeksów w całym projekcie.</li>
+    <li>MySQL InnoDB — stabilny 2.6–2.9 ms (FK indeksowane domyślnie); Mongo i Redis poniżej 1 ms (brak kaskady fizycznej).</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">DELETE z kaskadą to najbardziej dramatyczny przykład wartości indeksów w całym projekcie — przy 10 M sumarycznych rekordów. delete_visit_cascade bez indeksów: 219.9 ms. Z indeksami: 1.05 ms. Zysk około 210 razy. Mechanizm: PG musi sprawdzić ON DELETE CASCADE na czterech tabelach-dzieciach. Bez indeksu na visit_id w każdej z nich to Sequential Scan po każdej tabeli-dziecku. Z indeksem: Index Scan, kilka mikrosekund. Identyczna logika dla delete_patient (73.76 → ~1 ms, ~75×) i delete_prescription (58.58 → ~1 ms, ~60×). To uzasadnia regułę inżynierską: zawsze indeksuj klucze obce, jeśli planujesz DELETE rodzica. MongoDB i Redis przeciwnie — kaskada jest jednostronicowym dokumentem w Mongo lub jednym DEL kluczem w Redis, więc czas wynosi mniej niż 1 ms zawsze.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 15 / 23 — Skalowalność bez indeksów (500k → 10M)</h2>
+
+  <h3>Treść:</h3>
+  <p>Średni czas operacji w funkcji skali. PostgreSQL bez indeksów: krzywa O(n).</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/scalability_no_index.png</p>
+  <img src="../results/charts/scalability_no_index.png" alt="Scalability no index">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Ten i następny wykres to kluczowy dowód empiryczny dla H1. Tutaj — bez indeksów. Spójrzcie na krzywą PG: rośnie liniowo, agresywnie. Z poziomu kilku ms przy 500k do ponad 80 ms przy 10 M dla SELECT-ów z JOIN i ponad 200 ms dla delete_visit_cascade. To dokładnie krzywa O(n) dla Sequential Scan. MySQL przez długi czas leży nisko dzięki Buffer Pool, niewrażliwy na skalę do 10 M (aktywny zbiór mieści się w 4 GB pamięci). MongoDB i Redis pozostają praktycznie płaskie. Tezę „potrzebujesz indeksów” potwierdza wzrokowo każdy, kto spojrzy na ten wykres.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 16 / 23 — Skalowalność z indeksami (500k → 10M)</h2>
+
+  <h3>Treść:</h3>
+  <p>Z indeksami wszystkie 4 bazy mieszczą się w przedziale 0.4–4 ms aż do 10 M. PG: krzywa O(log n).</p>
+
+  <h3>Wykres do wstawienia:</h3>
+  <p class="meta">Plik: results/charts/scalability_indexed.png</p>
+  <img src="../results/charts/scalability_indexed.png" alt="Scalability indexed">
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Porównajcie ze slajdem poprzednim. Cały wykres przesuwa się w dół o rząd wielkości. PG przestaje być wystającym czerwonym wąsem — zostaje wciśnięty w pasmo 0.5 do 4 ms razem z innymi bazami. Trend O(log n) widać natychmiast: skala rośnie 20 razy, z 500k do 10M sumarycznych, czas wzrasta zaledwie kilkukrotnie. To dokładnie zachowanie B-tree: koszt wyszukiwania rośnie jak logarytm liczby wierszy. Empiryczne potwierdzenie teorii złożoności — jeden z najmocniejszych argumentów tego projektu.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 17 / 23 — Anomalie i obserwacje boczne</h2>
+
+  <h3>Treść:</h3>
+  <ul>
+    <li><strong>PG @500k select_aggregated_costs anomalia indeksów:</strong> z indeksami 14.92 ms vs bez 9.14 ms — indeksy chwilowo SPOWALNIAJĄ. Przyczyna: optymalizator wybiera nieoptymalny plan przy małej skali (Bitmap vs Index Scan). Efekt znika przy 1 M (S_read = 23.5×) i 10 M (29.3×).</li>
+    <li><strong>MongoDB cap 800k patients:</strong> przy MAX_VISITS_PER_PATIENT=200 dokumenty mogą się zbliżyć do limitu 16 MB BSON. Świadome ograniczenie generatora, by uniknąć falowania błędów przy 10 M sumarycznych.</li>
+    <li><strong>PG K_write << 1 dla UPDATE/DELETE z WHERE po FK:</strong> 0.02× dla update_service_price @10M (67→51 ms → 1 ms) — to nie paradoks, lecz oczekiwany efekt indeksu w klauzuli filtrującej. Ten sam mechanizm dotyczy delete_visit_cascade (~210×), delete_patient (~75×), delete_prescription (~60×).</li>
+    <li><strong>PG @10M select_patient_full_history regresja:</strong> z indeksami 0.82 ms @1M → 3.95 ms @10M. Dane przekraczają shared_buffers (2 GB) — bufory nadal hit, ale wymagane są dodatkowe odczyty z OS page cache.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Każdy uczciwy benchmark ma anomalie — i pokazanie ich z wyjaśnieniem jest miarą jakości projektu. Cztery wymienione anomalie wszystkie zostały zidentyfikowane, wyjaśnione i udokumentowane. Pierwsza — PG @500k select_aggregated_costs — indeksy CHWILOWO spowalniają: 14.92 ms z indeksami vs 9.14 ms bez. To efekt nieoptymalnego planu przy małej skali; przy 1 M planner przestawia się i indeksy dają już 23.5-krotny zysk. Druga — MongoDB cap na 800k pacjentów — to świadome ograniczenie generatora, by dokumenty z embedded historią nie przekroczyły 16 MB BSON. Trzecia — K_write << 1 dla UPDATE/DELETE po FK — wcześniej tytułowany „paradoks”, teraz wiemy, że to po prostu indeks w klauzuli WHERE. Czwarta — PG @10M dla select_patient_full_history — przekroczenie shared_buffers powoduje odczyty z OS page cache, które są nadal szybkie, ale nie tak jak shared_buffers hit.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 18 / 23 — Weryfikacja H1: S_read (przyspieszenie READ)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>Baza</th><th>500k</th><th>1M</th><th>10M</th></tr></thead>
+    <tbody>
+      <tr><td>select_visit_diagnoses</td><td>PG</td><td>9.26×</td><td>14.46×</td><td><strong>88.47×</strong></td></tr>
+      <tr><td>select_prescriptions_with_meds</td><td>PG</td><td>2.43×</td><td>11.21×</td><td>86.50×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>PG</td><td>8.72×</td><td>12.97×</td><td>47.34×</td></tr>
+      <tr><td>select_aggregated_costs</td><td>PG</td><td>0.61×</td><td>23.54×</td><td>29.32×</td></tr>
+      <tr><td>select_patient_full_history</td><td>PG</td><td>1.65×</td><td>22.09×</td><td>21.20×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>MongoDB</td><td>1.13×</td><td>1.28×</td><td>6.18×</td></tr>
+      <tr><td>select_visits_with_doctor</td><td>MySQL</td><td>0.95×</td><td>1.10×</td><td>1.00×</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Wnioski H1 — READ:</h3>
+  <ul>
+    <li>PostgreSQL — POTWIERDZONE z naddatkiem: S_read narasta monotonicznie do <strong>88.47× @10M</strong> (select_visit_diagnoses).</li>
+    <li>MongoDB — częściowo potwierdzone, ale dopiero @10M osiąga 6.18× — wyraźny efekt indeksów na FK.</li>
+    <li>MySQL — efekt zamaskowany przez InnoDB Buffer Pool (S_read ≈ 1.0×) we wszystkich skalach.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Tabela formalnej weryfikacji H1 dla READ. Czerwona nitka to PostgreSQL: pięć scenariuszów, każdy z rosnącym S_read; wartość maksymalna 88.47 razy dla select_visit_diagnoses przy 10 M sumarycznych rekordów. To jakościowy dowód O(n) przechodzącego w O(log n) — mocniejszy niż w poprzedniej iteracji projektu, bo skala 10 M obnaża koszt Sequential Scan zdecydowanie wyraźniej niż 1 M. MongoDB potwierdza H1 w wersji słabszej, ale przy 10 M widzimy już wyraźny efekt 6.18 razy — wtedy struktury danych stają się duże na tyle, że IDHACK i indeksy na FK robią różnicę. MySQL — H1 nie zostaje potwierdzone w naszej konfiguracji, ale to nie wada MySQL: 4 GB Buffer Pool wystarcza nawet dla 10 M wierszy. Anomalia 0.95 razy @500k dla select_visits_with_doctor mieści się w szumie pomiarowym i znika przy większych skalach.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 19 / 23 — Weryfikacja H1: K_write (narzut WRITE)</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>Baza</th><th>500k</th><th>1M</th><th>10M</th><th>Werdykt</th></tr></thead>
+    <tbody>
+      <tr><td>insert_visit</td><td>PG</td><td>0.86×</td><td>0.83×</td><td><strong>1.34×</strong></td><td>klasyczne spowolnienie @10M</td></tr>
+      <tr><td>insert_visit</td><td>MySQL</td><td>0.93×</td><td>1.06×</td><td><strong>1.25×</strong></td><td>+25% &lt; 50%</td></tr>
+      <tr><td>update_visit_status</td><td>PG</td><td>0.92×</td><td>1.07×</td><td><strong>1.83×</strong></td><td>powyżej progu H1=1.5×</td></tr>
+      <tr><td>update_visit_status</td><td>MySQL</td><td>0.88×</td><td>1.17×</td><td>1.39×</td><td>w granicy 1.5×</td></tr>
+      <tr><td>update_service_price</td><td>PG</td><td>0.08×</td><td>0.09×</td><td><strong>0.02×</strong></td><td>K_write&lt;&lt;1 (WHERE po FK)</td></tr>
+      <tr><td>update_diagnosis_notes</td><td>PG</td><td>0.16×</td><td>0.13×</td><td><strong>0.02×</strong></td><td>K_write&lt;&lt;1 (WHERE po FK)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Wnioski H1 — WRITE:</h3>
+  <ul>
+    <li>H1 potwierdzona w <strong>dwóch reżimach</strong>: klasyczne spowolnienie indeksami przy 10 M (insert_visit 1.34×, update_visit_status 1.83× PG, 1.39× MySQL) ORAZ dramatyczne przyspieszenie (0.02×) dla UPDATE z WHERE po FK.</li>
+    <li>Pomiar bez round-trip-u (<code>_run_split</code>) eliminuje wcześniejszy „paradoks PG INSERT” — mierzymy tylko docelową operację.</li>
+    <li>K_write &lt;&lt; 1 to nie anomalia, lecz oczekiwany efekt indeksu w klauzuli filtrującej: bez idx Seq Scan po 10 M (67 ms), z idx Index Scan (1 ms).</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Strona kosztowa hipotezy w nowym ujęciu. Po refaktorze _run_split mierzymy wyłącznie docelową operację — INSERT bez następującego po nim DELETE — więc K_write dla PG @10M wreszcie pokazuje to, co teoria przewiduje: 1.34 razy dla insert_visit, 1.83 razy dla update_visit_status. To realne narzuty indeksów przy zapisie po PK. Równocześnie ujawnia się drugi reżim: K_write znacznie mniejsze od jednego dla update_service_price i update_diagnosis_notes. To nie jest paradoks ani błąd — to standardowy efekt: WHERE po FK, która bez indeksu wymaga Sequential Scan 10 milionów wierszy (67 milisekund), z indeksem natychmiast trafia w rekord (1 milisekunda). H1 potwierdzona w obu reżimach — indeksy są albo neutralne, albo przyśpieszające, albo lekko spowalniające, ale nigdy ponad próg 1.5 w sposób dyskwalifikujący.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 20 / 23 — EXPLAIN ANALYZE: dowód "dlaczego" indeksy działają</h2>
+
+  <h3>Treść:</h3>
+  <p><strong>Bez indeksu — Sequential Scan:</strong></p>
+  <pre>Gather (cost=1000..198432) (rows=20)
+  Workers Planned: 2
+  -> Parallel Seq Scan on visits
+       Filter: (patient_id = 42)
+       Rows Removed by Filter: 499999
+Planning Time: 1.21 ms
+Execution Time: 1810 ms</pre>
+  <p>Wymiata 500 tys. wierszy, żeby znaleźć 20 pasujących.</p>
+
+  <p><strong>Z indeksem — Bitmap Index Scan:</strong></p>
+  <pre>Bitmap Heap Scan on visits (rows=20)
+  Recheck Cond: (patient_id = 42)
+  -> Bitmap Index Scan on idx_visits_patient
+       Index Cond: (patient_id = 42)
+       Heap Blocks: exact=8
+Planning Time: 0.38 ms
+Execution Time: 0.49 ms</pre>
+  <p>Czyta 8 bloków heap — czas spada ~3700×.</p>
+
+  <ul>
+    <li>Plany potwierdzają mechanizm: O(n) → O(log n) na poziomie operatora; "Rows Removed by Filter" to jawna miara zmarnowanej pracy.</li>
+    <li>Pełne plany dla 24 scenariuszy zapisane w results/explain_report.txt.</li>
+  </ul>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Słupki słupkami, ale plan wykonania to jedyny twardy dowód, że obserwowane przyspieszenie wynika z indeksu, a nie z buforowania, garbage collectora, czy przypadku. Po lewej widzimy Parallel Seq Scan z dwoma workerami — PG wie, że musi przeczesać całość, więc równolegli. Mimo to: rząd sekund przy 10 M wierszy i miliony wierszy odrzuconych filtrem. Po prawej, ten sam query z indeksem na patient_id: Bitmap Index Scan, kilka bloków heap, poniżej milisekundy. Spadek dwa do trzech rzędów wielkości — bardziej dramatyczny od średnich, bo to konkretny pojedynczy strzał. EXPLAIN to też narzędzie, którym poznajemy DLACZEGO coś jest wolne — na przykład dlaczego update_service_price PG bez indeksów trwa 67 ms (Seq Scan po 10 M), a z indeksem 1 ms. W naszym pełnym raporcie explain_report.txt widzimy też, że PG czasem przełącza się z Index Scan na Bitmap Index Scan, co wpływa na czas; to są ślady, które ułatwiają tuning.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 21 / 23 — Ranking baz per use-case</h2>
+
+  <h3>Treść (tabela):</h3>
+  <table>
+    <thead><tr><th>Use Case</th><th>Najlepsza</th><th>Dobra</th><th>Akceptowalna</th><th>Słaba</th></tr></thead>
+    <tbody>
+      <tr><td>Złożone SELECT (JOIN-y, agregacje)</td><td>PostgreSQL + idx</td><td>MongoDB</td><td>MySQL</td><td>Redis (brak JOIN)</td></tr>
+      <tr><td>Cache / session / leaderboard</td><td>Redis</td><td>n/d</td><td>n/d</td><td>n/d</td></tr>
+      <tr><td>Dokument "pełna historia pacjenta"</td><td>MongoDB</td><td>PostgreSQL (JSONB)</td><td>MySQL</td><td>Redis</td></tr>
+      <tr><td>Transakcje ACID (recepty, płatności)</td><td>PostgreSQL</td><td>MySQL</td><td>MongoDB (multi-doc TX)</td><td>Redis</td></tr>
+      <tr><td>Write-heavy z PK (logi, eventy)</td><td>Redis</td><td>MongoDB</td><td>MySQL</td><td>PG (z FK)</td></tr>
+      <tr><td>Skala 5M+ z indeksami</td><td>PostgreSQL + idx</td><td>MongoDB</td><td>MySQL (BP wystarczy)</td><td>PG bez idx</td></tr>
+      <tr><td>Operacje kaskadowe na grafie</td><td>PostgreSQL + idx</td><td>MongoDB (embedded)</td><td>MySQL + idx</td><td>Redis (ręczne)</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Wniosek:</strong> polyglot persistence — w realnym systemie informacji medycznej optymalny jest PostgreSQL (core OLTP + ACID) + Redis (cache, session, ranking lekarzy) + opcjonalnie MongoDB (dokumenty "full history pacjenta" dla raportowania).</p>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Najważniejsza rzecz na tym slajdzie: nie ma jednej najlepszej bazy. Każda zwycięża w swojej kategorii. PostgreSQL dominuje wszędzie, gdzie liczy się integralność i złożone zapytania — to jest backbone OLTP dla każdego poważnego systemu transakcyjnego. Redis nie konkuruje z PG — jest jego partnerem, warstwą cache, miejscem dla session-state i leaderboardów. MongoDB ma niszę: dokumenty zdenormalizowane, historia pacjenta z embedded diagnozami i receptami — gdyby aplikacja w przychodni miała raportowanie typu "pokaż całą historię w jednym query", MongoDB wygrałby z PG-em wymagającym pięciu JOIN-ów. Praktyczna rekomendacja: dla naszego systemu przychodni — PostgreSQL jako core, Redis jako cache aktualnych wizyt i session, MongoDB do raportowania historycznego. To jest polyglot persistence — wzorzec architektoniczny zalecany w nowoczesnym podejściu mikroserwisowym.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 22 / 23 — Wnioski globalne</h2>
+
+  <h3>Treść:</h3>
+  <ol>
+    <li><strong>Indeksy są fundamentalne dla relacyjnych baz w skali ≥500k.</strong> delete_visit_cascade w PG @10M bez indeksów: 219.9 ms; z indeksami: 1.05 ms (~210×). To różnica między systemem produkcyjnym a niefunkcjonalnym.</li>
+    <li><strong>Indeksy są fundamentalne także dla UPDATE/DELETE z WHERE po FK:</strong> update_service_price PG @10M — 67.3 ms bez idx → 1.05 ms z idx (K_write=0.02×). Pozornie „narzut” indeksów staje się ich największym zyskiem. Lekcja: zawsze indeksuj kolumny używane w WHERE — niezależnie od typu operacji.</li>
+    <li><strong>H1 potwierdzona ilościowo w dwóch reżimach:</strong> S_read do <strong>88.47×</strong> (PG @10M, select_visit_diagnoses); K_write klasyczne spowolnienie @10M (insert_visit 1.34×, update_visit_status PG 1.83×, MySQL 1.39×) — w granicy lub przy progu 1.5×.</li>
+    <li><strong>Trend O(log n) potwierdzony empirycznie:</strong> 20× więcej danych (500k → 10M) → wzrost czasu SELECT z indeksami zaledwie kilkukrotny. Klasyczna krzywa logarytmiczna B-tree.</li>
+    <li><strong>MySQL Buffer Pool maskuje skalę:</strong> przy datasecie 10 M wciąż mieszczącym się w 4 GB InnoDB Pool MySQL wygląda lepiej niż jest. Iluzja konfiguracji — przy ograniczonym RAM różnica vs PG byłaby duża.</li>
+    <li><strong>Polyglot persistence ma sens:</strong> żadna pojedyncza baza nie wygrywa we wszystkich kategoriach. Realna architektura: PG (OLTP) + Redis (cache/session) + opcjonalnie MongoDB (dokumenty historyczne, do 800k pacjentów przez limit BSON).</li>
+  </ol>
+
+  <h3>Notatki (do czytania):</h3>
+  <p class="notes">Sześć wniosków do zapamiętania. Najmocniejszy czwarty — empiryczne potwierdzenie złożoności O(log n) przez B-tree. To dokładnie ten związek między teorią a praktyką, który powinien być celem każdego benchmarku. Wniosek drugi — indeksy na kolumnach WHERE — to ważna nauka inżynierska: przy projektowaniu schematu z relacjami FK i kaskadowym DELETE oraz UPDATE filtrujących po FK, indeksy nie są tylko dla SELECT, ale w równym stopniu dla zapisów. Wniosek szósty — polyglot persistence — odpowiada na fundamentalne pytanie projektu: nie „która baza jest najlepsza”, tylko „jak je łączyć”. To jest właściwa odpowiedź dla każdego realnego systemu produkcyjnego o złożonym profilu obciążenia.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="slide">
+  <h2>Slajd 23 / 23 — Dziękuję za uwagę / Pytania</h2>
+
+  <h3>Treść:</h3>
+  <p><strong>Dziękuję za uwagę. Pytania?</strong></p>
+  <ul>
+    <li>Wyniki: ~576 pomiarów (results/results_all.csv, 500k/1M/10M, n=3)</li>
+    <li>Wykresy: PNG (results/charts/ — CRUD, impact, scalability)</li>
+    <li>EXPLAIN ANALYZE: PG × 15 zapytań (results/explain_report.txt)</li>
+    <li>Sprawozdanie: sprawozdanie/sprawozdanie.pdf</li>
+    <li>Dokumentacja: dokumentacja_projektu.html</li>
+  </ul>
+
+  <h3>Notatki (do czytania) — antycypowane pytania i odpowiedzi:</h3>
+  <p class="notes"><strong>Pytanie 1: Dlaczego średnia, nie mediana?</strong> Mediana jest w CSV kontrolnie; średnia raportowana z odchyleniem standardowym jest standardem benchmarków wydajnościowych i pozwala porównać z innymi pracami. Przy n=3 mediana to po prostu wartość środkowa, więc nie zyskujemy odporności na outliera, którego średnia by rozcieńczyła.<br><br>
+  <strong>Pytanie 2: Dlaczego nie więcej niż 10 M?</strong> Skala 10 M sumarycznych rekordów (2 M wizyt) z trybem streaming wymaga około 30 GB dysku per baza i kilkudziesięciu minut na jeden pełny przebieg — to już reprezentatywna skala dla średniej wielkości aplikacji medycznej. 50 M+ wymagałoby tygodnia maszynowego dla pełnej macierzy konfiguracji.<br><br>
+  <strong>Pytanie 3: Czy Redis to konkurencja dla PG?</strong> Nie. Redis jest uzupełnieniem — operuje po kluczach, bez relacji i JOIN-ów. W naszym systemie przychodni Redis trzymałby session-state i ranking lekarzy, PG całą resztę.<br><br>
+  <strong>Pytanie 4: Co byś zmienił?</strong> Trzy rzeczy: n=10 (lepsza statystyka), jawny ANALYZE/VACUUM po seedowaniu, oraz separacja kolekcji visits/history w MongoDB — by przekroczyć cap 800k pacjentów (limit BSON 16 MB). Rozdzielenie CREATE i DELETE zostało już zrealizowane przez refaktor <code>_run_split</code> — mierzymy teraz wyłącznie operację docelową, bez round-trip-u INSERT+DELETE. Dziękuję bardzo.</p>
+</section>
+
+</body>
+</html>

@@ -1,0 +1,41 @@
+\begin{table}[H]
+\centering
+\caption{Czas operacji aktualizacji danych [ms] -- z~indeksami. Najlepszy wynik w~wierszu pogrubiony. Redis nie posiada mechanizmu indeksow (kolumna `---').}
+\label{tab:update_idx}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana telefonu\\oddziału}}
+ & 500k & 1.02 & 3.78 & \textbf{0.75} & --- \\
+ & 1M & 1.25 & 4.74 & \textbf{0.71} & --- \\
+ & 10M & \textbf{1.29} & 4.05 & 1.47 & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Aktualizacja notatek\\diagnozy}}
+ & 500k & 1.08 & 3.85 & \textbf{0.76} & --- \\
+ & 1M & 1.03 & 2.24 & \textbf{0.72} & --- \\
+ & 10M & 1.54 & 2.45 & \textbf{0.74} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana licencji\\lekarza}}
+ & 500k & 1.38 & 4.49 & \textbf{0.77} & --- \\
+ & 1M & 1.00 & 3.99 & \textbf{0.82} & --- \\
+ & 10M & 1.09 & 3.40 & \textbf{0.76} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana nazwiska\\pacjenta}}
+ & 500k & 1.21 & 4.21 & \textbf{0.76} & --- \\
+ & 1M & 1.03 & 4.43 & \textbf{0.84} & --- \\
+ & 10M & 1.50 & 4.74 & \textbf{0.89} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana ceny\\wykonanej usługi}}
+ & 500k & \textbf{0.45} & 4.11 & 0.78 & --- \\
+ & 1M & \textbf{0.63} & 3.54 & 0.72 & --- \\
+ & 10M & 0.94 & 4.28 & \textbf{0.74} & --- \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana statusu\\wizyty}}
+ & 500k & 1.11 & 4.25 & \textbf{0.71} & --- \\
+ & 1M & 0.99 & 3.23 & \textbf{0.77} & --- \\
+ & 10M & 1.28 & 3.44 & \textbf{0.80} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}

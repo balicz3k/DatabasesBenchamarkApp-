@@ -1,0 +1,41 @@
+\begin{table}[H]
+\centering
+\caption{Czas operacji usuwania danych [ms] -- bez indeksow. Najlepszy wynik w~wierszu pogrubiony.}
+\label{tab:delete_no}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\diagnozy}}
+ & 500k & 0.95 & 4.65 & 0.74 & \textbf{0.43} \\
+ & 1M & 0.93 & 3.84 & 0.70 & \textbf{0.39} \\
+ & 10M & 1.13 & 4.45 & 0.71 & \textbf{0.40} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\pacjenta}}
+ & 500k & 4.64 & 5.01 & 0.69 & \textbf{0.50} \\
+ & 1M & 7.52 & 3.80 & 0.82 & \textbf{0.49} \\
+ & 10M & 78.57 & 4.05 & 0.69 & \textbf{0.39} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\wykonanej usługi}}
+ & 500k & 1.07 & 4.90 & 0.76 & \textbf{0.43} \\
+ & 1M & 0.98 & 4.26 & 0.72 & \textbf{0.38} \\
+ & 10M & 1.09 & 3.84 & 0.72 & \textbf{0.38} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\recepty}}
+ & 500k & 3.66 & 4.60 & 0.73 & \textbf{0.51} \\
+ & 1M & 6.24 & 4.09 & 0.82 & \textbf{0.38} \\
+ & 10M & 61.49 & 4.47 & 0.76 & \textbf{0.38} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Usunięcie\\wyniku badania}}
+ & 500k & 1.02 & 4.34 & 0.74 & \textbf{0.44} \\
+ & 1M & 0.93 & 4.19 & 0.73 & \textbf{0.39} \\
+ & 10M & 1.07 & 4.06 & 0.71 & \textbf{0.40} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Kaskadowe\\usunięcie wizyty}}
+ & 500k & 12.75 & 12.29 & 0.73 & \textbf{0.59} \\
+ & 1M & 22.79 & 4.05 & 0.84 & \textbf{0.39} \\
+ & 10M & 224.6 & 4.23 & 0.73 & \textbf{0.42} \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -5,7 +5,7 @@ Uruchamia generowanie danych, wstawianie, benchmarki (bez/z indeksami)
 oraz analizę EXPLAIN dla każdej skali. Na końcu generuje wykresy.
 
 Użycie:
-    python run_all.py                     # Domyślne skale: 10000, 100000, 500000
+    python run_all.py                     # Domyślne skale: 500000, 1000000, 10000000
     python run_all.py --scales 10000 100000
     python run_all.py --skip-seed         # Pomiń wstawianie, tylko benchmark
     python run_all.py --charts-only       # Tylko wykresy z istniejących wynikow
@@ -13,14 +13,13 @@ Użycie:
 
 import argparse
 import csv
+import gc
 import os
 import sys
 import time
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import pandas as pd
+# matplotlib and pandas are heavy; import lazily inside generate_charts()
+# to avoid Windows DLL-scan hang on startup.
 
 from core.database import ConnectionManager
 from core.generator import DataGenerator
@@ -36,6 +35,10 @@ from core.benchmark import (
 
 CHARTS_DIR = os.path.join(RESULTS_DIR, "charts")
 ALL_RESULTS_FILE = os.path.join(RESULTS_DIR, "results_all.csv")
+
+# Scales >= this threshold use streaming seeding to avoid OOM (Python in-memory lists)
+STREAMING_THRESHOLD = 5_000_000
+VISIT_CHUNK_SIZE = 500_000
 
 
 def log(msg: str):
@@ -62,6 +65,11 @@ def merge_csv_files(file_list: list[str], output: str):
 
 
 def generate_charts():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
     os.makedirs(CHARTS_DIR, exist_ok=True)
 
     if not os.path.isfile(ALL_RESULTS_FILE):
@@ -305,20 +313,97 @@ def generate_charts():
             log(f"Wykres -> {path}")
 
 
-def run_scale(cm: ConnectionManager, scale: int, skip_seed: bool):
+def _seed_large_scale(
+    cm: ConnectionManager, scale: int, seeder: DatabaseSeeder, gen: DataGenerator
+):
+    """Streaming seeding for scales >= STREAMING_THRESHOLD.
+    Generates base tables in memory, then visits+children in VISIT_CHUNK_SIZE chunks.
+    MongoDB is built by reading from PostgreSQL after SQL seeding completes.
+    Redis is seeded by streaming from PostgreSQL server-side cursors.
+    """
+    log(f"  [Streaming] Skala {scale:,} – tryb streaming (chunks po {VISIT_CHUNK_SIZE:,}).")
+
+    log("  [Streaming] Generowanie danych bazowych (bez wizyt)...")
+    base_data = gen.generate_base_data(seed=42)
+
+    log("  [Streaming] Tworzenie schematu SQL + seedowanie danych bazowych...")
+    seeder.seed_sql_schema_and_base(base_data, progress_callback=log)
+
+    total_visits = gen.cfg["visits"]
+    log(f"  [Streaming] Start seedowania wizyt: {total_visits:,} wizyt...")
+    chunk_num = 0
+    seeded_visits = 0
+    for chunk in gen.generate_visits_streaming(chunk_size=VISIT_CHUNK_SIZE):
+        visits, diagnoses, services, prescriptions, rx_items, test_results = chunk
+        chunk_num += 1
+        seeded_visits += len(visits)
+        log(
+            f"  [Streaming] Chunk {chunk_num}: "
+            f"{seeded_visits:,}/{total_visits:,} wizyt"
+        )
+        seeder.seed_sql_visit_chunk(
+            visits, diagnoses, services, prescriptions, rx_items, test_results,
+            progress_callback=log,
+        )
+        del visits, diagnoses, services, prescriptions, rx_items, test_results
+        gc.collect()
+
+    log("  [Streaming] SQL gotowe. Seedowanie MongoDB z PostgreSQL...")
+    seeder.seed_mongo_from_postgres(progress_callback=log)
+
+    log("  [Streaming] Seedowanie Redis (streaming z PostgreSQL)...")
+    seeder.seed_redis_streaming(base_data, progress_callback=log)
+
+    log("  [Streaming] Seedowanie zakonczone.")
+
+
+def run_scale(cm: ConnectionManager, scale: int, skip_seed: bool, redis_only: bool = False):
     log(f"{'='*60}")
     log(f"  SKALA: {scale:,} wizyt")
     log(f"{'='*60}")
 
     seeder = DatabaseSeeder(cm)
+    gen = DataGenerator(scale)
 
     if not skip_seed:
-        log("Generowanie danych w pamieci...")
-        gen = DataGenerator(scale)
-        data = gen.generate(progress_callback=log)
+        if scale >= STREAMING_THRESHOLD:
+            if redis_only:
+                # SQL+MongoDB already seeded; only re-seed Redis
+                log("  [redis-only] Re-seedowanie Redis (streaming z PostgreSQL)...")
+                gen2 = DataGenerator(scale)
+                base_data = gen2.generate_base_data(seed=42)
+                seeder.seed_redis_streaming(base_data, progress_callback=log)
+            else:
+                _seed_large_scale(cm, scale, seeder, gen)
+        else:
+            log("Generowanie danych SQL w pamieci...")
+            data = gen.generate(progress_callback=log, seed=42)
 
-        log("Wstawianie danych do 4 baz...")
-        seeder.seed_all(data, progress_callback=log)
+            log("Czyszczenie baz danych...")
+            seeder.clear_all()
+
+            log("[Faza 1/3] Seedowanie PostgreSQL i MySQL...")
+            seeder.seed_postgres(data, progress_callback=log)
+            seeder.seed_mysql(data, progress_callback=log)
+
+            log("[Faza 2/3] Seedowanie MongoDB (streaming, oszczednosc RAM)...")
+            seeder.seed_mongo_streaming(
+                DataGenerator._mongo_doc_generator(data),
+                progress_callback=log,
+            )
+            gc.collect()
+
+            log("[Faza 3/3] Budowanie i seedowanie Redis...")
+            data.redis_visit_statuses, data.redis_doctor_sessions = (
+                DataGenerator._build_redis_data(data)
+            )
+            seeder.seed_redis_data(data, progress_callback=log)
+            del data.redis_visit_statuses, data.redis_doctor_sessions
+            data.redis_visit_statuses = []
+            data.redis_doctor_sessions = []
+            gc.collect()
+
+            log("Seedowanie zakonczone.")
     else:
         log("Pomijam wstawianie danych (--skip-seed).")
 
@@ -354,12 +439,16 @@ def run_scale(cm: ConnectionManager, scale: int, skip_seed: bool):
 def main():
     parser = argparse.ArgumentParser(description="ZTDB – Automatyczne benchmarki baz danych")
     parser.add_argument(
-        "--scales", nargs="+", type=int, default=[10_000, 100_000, 1_000_000],
-        help="Skale do przetestowania (domyslnie: 10000 100000 1000000)",
+        "--scales", nargs="+", type=int, default=[500_000, 1_000_000, 10_000_000],
+        help="Skale do przetestowania (domyslnie: 500000 1000000 5000000)",
     )
     parser.add_argument(
         "--skip-seed", action="store_true",
         help="Pomin generowanie i wstawianie danych",
+    )
+    parser.add_argument(
+        "--redis-only", action="store_true",
+        help="Tylko seeduj Redis (streaming z PG) i uruchom benchmarki; pomija SQL/Mongo seeding",
     )
     parser.add_argument(
         "--charts-only", action="store_true",
@@ -395,15 +484,31 @@ def main():
 
     for scale in args.scales:
         scale_start = time.time()
-        partials = run_scale(cm, scale, args.skip_seed)
+        partials = run_scale(cm, scale, args.skip_seed, redis_only=args.redis_only)
         all_partial.extend(partials)
         elapsed = time.time() - scale_start
         log(f"Skala {scale:,} ukonczona w {elapsed:.1f}s")
 
     merge_csv_files(all_partial, ALL_RESULTS_FILE)
 
-    log("Generowanie wykresow...")
-    generate_charts()
+    log("Generowanie wykresow (subprocess, timeout 180s)...")
+    import subprocess as _subprocess
+    try:
+        result = _subprocess.run(
+            [sys.executable, __file__, "--charts-only"],
+            timeout=180,
+            capture_output=True,
+            text=True,
+        )
+        for line in result.stdout.splitlines():
+            log(f"  {line}")
+        if result.returncode != 0:
+            log(f"  WARN: charts subprocess exit code {result.returncode}")
+            for line in result.stderr.splitlines()[-5:]:
+                log(f"  ERR: {line}")
+    except _subprocess.TimeoutExpired:
+        log("  WARN: generowanie wykresow przekroczilo timeout 180s – pominieto.")
+        log("  Uruchom pozniej: python run_all.py --charts-only")
 
     total_elapsed = time.time() - total_start
     log(f"{'='*60}")

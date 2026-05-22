@@ -1,0 +1,41 @@
+\begin{table}[H]
+\centering
+\caption{Czas operacji aktualizacji danych [ms] -- bez indeksow. Najlepszy wynik w~wierszu pogrubiony.}
+\label{tab:update_no}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana telefonu\\oddziału}}
+ & 500k & 1.18 & 2.86 & 0.80 & \textbf{0.39} \\
+ & 1M & 0.94 & 5.40 & 0.76 & \textbf{0.40} \\
+ & 10M & 1.06 & 3.99 & 0.75 & \textbf{0.39} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Aktualizacja notatek\\diagnozy}}
+ & 500k & 4.58 & 2.14 & \textbf{0.82} & 1.03 \\
+ & 1M & 7.10 & 3.72 & \textbf{0.72} & 0.81 \\
+ & 10M & 97.07 & 2.80 & \textbf{0.71} & 0.82 \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana licencji\\lekarza}}
+ & 500k & 1.32 & 4.49 & 2.39 & \textbf{0.42} \\
+ & 1M & 0.94 & 4.96 & 0.75 & \textbf{0.41} \\
+ & 10M & 1.14 & 3.91 & 0.81 & \textbf{0.39} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana nazwiska\\pacjenta}}
+ & 500k & 1.13 & 3.46 & 0.76 & \textbf{0.44} \\
+ & 1M & 1.09 & 3.89 & 0.75 & \textbf{0.44} \\
+ & 10M & 1.07 & 3.90 & 0.79 & \textbf{0.44} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana ceny\\wykonanej usługi}}
+ & 500k & 4.08 & 2.67 & 0.73 & \textbf{0.48} \\
+ & 1M & 7.05 & 6.01 & 0.71 & \textbf{0.47} \\
+ & 10M & 67.45 & 5.37 & 0.71 & \textbf{0.41} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Zmiana statusu\\wizyty}}
+ & 500k & 1.19 & 3.83 & 0.72 & \textbf{0.51} \\
+ & 1M & 0.94 & 2.07 & 0.72 & \textbf{0.38} \\
+ & 10M & 1.03 & 2.06 & \textbf{0.69} & 0.83 \\
+\bottomrule
+\end{tabular}
+\end{table}

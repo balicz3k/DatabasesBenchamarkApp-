@@ -1,16 +1,31 @@
 """
 core/generator.py – Generowanie syntetycznych danych medycznych (system szpitalny).
-Obsługiwane skale: 10 000 / 100 000 / 1 000 000 wizyt (rekordów w tabeli visits).
+Skala oznacza SUMARYCZNĄ liczbę rekordów we wszystkich tabelach.
+Obsługiwane skale: 10 000 / 100 000 / 500 000 / 1 000 000 / 10 000 000 rekordów.
 
 Dane generowane bez zewnętrznych zależności.
 Używa polskich list imion i nazwisk oraz wbudowanego modułu random.
+
+Uwaga dotycząca skali 10M (~2M wizyt):
+  Generowanie i seeding wymaga ok. 2–4 GB RAM. Dla scale ≥ 5M aktywowany jest
+  tryb streaming chunkami po 500k wizyt (oszczędność pamięci).
 """
 
+import gc
 import random
 import string
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable, Optional
+
+try:
+    import resource as _resource
+    def _ram_mb() -> int:
+        return _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss // 1024
+except ImportError:
+    import psutil as _psutil
+    def _ram_mb() -> int:
+        return _psutil.Process().memory_info().rss // (1024 * 1024)
 
 # ── Polskie imiona i nazwiska ───────────────────────────────────────────────
 
@@ -166,6 +181,11 @@ SPECIALIZATION_NAMES = [
 
 
 # ── SCALE_MAP ────────────────────────────────────────────────────────────────
+# UWAGA: Klucz `scale` oznacza SUMARYCZNĄ liczbę rekordów we WSZYSTKICH tabelach.
+# Tabele zachowują proporcje (visits ≈ 0.205 × total; diagnozy/usługi ≈ visits;
+# prescriptions ≈ 0.4 × visits; prescription_items ≈ 0.8 × visits;
+# test_results ≈ 0.6 × visits; patients ≈ 0.016 × total; doctors ≈ 8e-5 × total).
+# Realna liczba wyniesie ok. 0.97–1.00 × klucza scale.
 
 SCALE_MAP = {
     10_000: {
@@ -174,29 +194,49 @@ SCALE_MAP = {
         "diseases": 100,
         "medical_services": 50,
         "medications": 80,
-        "patients": 2_000,
-        "doctors": 50,
-        "visits": 10_000,
+        "patients": 400,
+        "doctors": 20,
+        "visits": 2_000,
     },
     100_000: {
-        "departments": 20,
-        "specializations": 25,
-        "diseases": 200,
-        "medical_services": 100,
-        "medications": 150,
-        "patients": 10_000,
-        "doctors": 100,
+        "departments": 15,
+        "specializations": 20,
+        "diseases": 120,
+        "medical_services": 60,
+        "medications": 100,
+        "patients": 1_600,
+        "doctors": 20,
+        "visits": 20_000,
+    },
+    500_000: {
+        "departments": 10,
+        "specializations": 15,
+        "diseases": 100,
+        "medical_services": 50,
+        "medications": 80,
+        "patients": 8_000,
+        "doctors": 40,
         "visits": 100_000,
     },
     1_000_000: {
+        "departments": 15,
+        "specializations": 20,
+        "diseases": 150,
+        "medical_services": 75,
+        "medications": 120,
+        "patients": 16_000,
+        "doctors": 80,
+        "visits": 200_000,
+    },
+    10_000_000: {
         "departments": 30,
         "specializations": 40,
         "diseases": 500,
         "medical_services": 200,
         "medications": 400,
-        "patients": 80_000,
-        "doctors": 500,
-        "visits": 1_000_000,
+        "patients": 160_000,
+        "doctors": 800,
+        "visits": 2_000_000,
     },
 }
 
@@ -270,12 +310,19 @@ class DataGenerator:
         self.scale = scale
         self.cfg = SCALE_MAP[scale]
 
-    def generate(self, progress_callback: ProgressCallback = None) -> GeneratedData:
+    def generate(self, progress_callback: ProgressCallback = None, seed: int = 42) -> GeneratedData:
+        random.seed(seed)
         data = GeneratedData()
 
         def _report(msg: str):
             if progress_callback:
                 progress_callback(msg)
+
+        def _report_ram(label: str):
+            try:
+                _report(f"  [RAM] {label}: ~{_ram_mb()} MB")
+            except Exception:
+                pass
 
         _report("Generowanie tabel słownikowych...")
         data.departments = self._gen_departments(self.cfg["departments"])
@@ -286,42 +333,45 @@ class DataGenerator:
 
         _report("Generowanie pacjentów...")
         data.patients = self._gen_patients(self.cfg["patients"])
+        _report_ram("po pacjentach")
 
         _report("Generowanie lekarzy...")
         data.doctors = self._gen_doctors(
             self.cfg["doctors"], self.cfg["departments"], self.cfg["specializations"]
         )
 
-        _report(f"Generowanie {self.cfg['visits']} wizyt...")
+        _report(f"Generowanie {self.cfg['visits']:,} wizyt...")
         data.visits = self._gen_visits(
             self.cfg["visits"], self.cfg["patients"], self.cfg["doctors"]
         )
+        _report_ram("po wizytach")
 
         _report("Generowanie wykonanych usług...")
         data.performed_services = self._gen_performed_services(
             data.visits, self.cfg["medical_services"]
         )
+        _report_ram("po usługach")
+        gc.collect()
 
         _report("Generowanie diagnoz...")
         data.diagnoses = self._gen_diagnoses(data.visits, self.cfg["diseases"])
+        _report_ram("po diagnozach")
+        gc.collect()
 
         _report("Generowanie recept i pozycji recept...")
         data.prescriptions, data.prescription_items = (
             self._gen_prescriptions_and_items(data.visits, self.cfg["medications"])
         )
+        _report_ram("po receptach")
+        gc.collect()
 
         _report("Generowanie wyników badań...")
         data.test_results = self._gen_test_results(data.visits)
+        _report_ram("po badaniach")
+        gc.collect()
 
-        _report("Budowanie dokumentów MongoDB...")
-        data.mongo_patients = self._build_mongo_documents(data)
-
-        _report("Budowanie struktur Redis...")
-        data.redis_visit_statuses, data.redis_doctor_sessions = (
-            self._build_redis_data(data)
-        )
-
-        _report("Zakończono generowanie danych.")
+        _report("Zakończono generowanie danych SQL.")
+        _report_ram("końcowe")
         return data
 
     # ── Generatory tabel SQL ─────────────────────────────────────────────────
@@ -411,11 +461,21 @@ class DataGenerator:
     @staticmethod
     def _gen_visits(n: int, n_patients: int, n_doctors: int) -> list[tuple]:
         base_date = date.today() - timedelta(days=730)
+        # Cap: max wizyt na pacjenta (ogranicza rozmiar dokumentu Mongo
+        # – BSON ma limit 16 MB, bez capa pojedyncze patient.visits
+        # może go przekroczyć przy 5 mln wizyt × few hot patients).
+        MAX_VISITS_PER_PATIENT = 200
+        visit_counts: dict[int, int] = {}
         rows = []
         for i in range(n):
+            for _ in range(20):
+                pid = random.randint(1, n_patients)
+                if visit_counts.get(pid, 0) < MAX_VISITS_PER_PATIENT:
+                    break
+            visit_counts[pid] = visit_counts.get(pid, 0) + 1
             rows.append((
                 i + 1,
-                random.randint(1, n_patients),
+                pid,
                 random.randint(1, n_doctors),
                 base_date + timedelta(days=random.randint(0, 730)),
                 random.choice(VISIT_STATUSES),
@@ -490,10 +550,117 @@ class DataGenerator:
                     tid += 1
         return rows
 
+    # ── Streaming (large scales ≥ 5 M) ─────────────────────────────────────
+
+    def generate_base_data(self, seed: int = 42) -> "GeneratedData":
+        """Generuje tylko dane bazowe bez wizyt i tabel podrzędnych.
+        Używany przy streamingowym seedowaniu dla skal >= 5 M.
+        """
+        random.seed(seed)
+        data = GeneratedData()
+        data.departments = self._gen_departments(self.cfg["departments"])
+        data.specializations = self._gen_specializations(self.cfg["specializations"])
+        data.diseases = self._gen_diseases(self.cfg["diseases"])
+        data.medical_services = self._gen_medical_services(self.cfg["medical_services"])
+        data.medications = self._gen_medications(self.cfg["medications"])
+        data.patients = self._gen_patients(self.cfg["patients"])
+        data.doctors = self._gen_doctors(
+            self.cfg["doctors"], self.cfg["departments"], self.cfg["specializations"]
+        )
+        return data
+
+    def generate_visits_streaming(self, chunk_size: int = 500_000):
+        """Generator – zwraca paczki wizyt bez materializacji całej listy.
+        Każda iteracja yields tuple:
+          (visits, diagnoses, services, prescriptions, rx_items, test_results)
+        IDs są globalnie unikalne w całym zbiorze.
+        """
+        n_total = self.cfg["visits"]
+        n_patients = self.cfg["patients"]
+        n_doctors = self.cfg["doctors"]
+        n_services = self.cfg["medical_services"]
+        n_diseases = self.cfg["diseases"]
+        n_meds = self.cfg["medications"]
+        base_date = date.today() - timedelta(days=730)
+
+        visit_id = 1
+        diag_id = 1
+        svc_id = 1
+        rx_id = 1
+        rxi_id = 1
+        tr_id = 1
+
+        while visit_id <= n_total:
+            n_chunk = min(chunk_size, n_total - visit_id + 1)
+
+            visits = [
+                (
+                    visit_id + i,
+                    random.randint(1, n_patients),
+                    random.randint(1, n_doctors),
+                    base_date + timedelta(days=random.randint(0, 730)),
+                    random.choice(VISIT_STATUSES),
+                )
+                for i in range(n_chunk)
+            ]
+
+            diagnoses = []
+            for v in visits:
+                for _ in range(random.randint(0, 2)):
+                    diagnoses.append((
+                        diag_id, v[0], random.randint(1, n_diseases),
+                        random.choice(DIAGNOSIS_TYPES),
+                        random.choice(DIAG_NOTES) if random.random() > 0.3 else "",
+                    ))
+                    diag_id += 1
+
+            services = []
+            for v in visits:
+                for _ in range(random.randint(0, 2)):
+                    services.append((
+                        svc_id, v[0], random.randint(1, n_services),
+                        random.randint(1, 3), round(random.uniform(50, 3000), 2),
+                    ))
+                    svc_id += 1
+
+            prescriptions = []
+            rx_items = []
+            for v in visits:
+                if random.random() < 0.4:
+                    prescriptions.append((rx_id, v[0], _rand_rx_code(), v[3]))
+                    for _ in range(random.randint(1, 3)):
+                        dosage = (
+                            f"{random.choice([1, 2, 3])}x"
+                            f"{random.choice([100, 200, 500])}mg"
+                        )
+                        rx_items.append((rxi_id, rx_id, random.randint(1, n_meds), dosage))
+                        rxi_id += 1
+                    rx_id += 1
+
+            test_results = []
+            for v in visits:
+                if random.random() < 0.3:
+                    for _ in range(random.randint(1, 3)):
+                        param = random.choice(PARAM_NAMES)
+                        value = round(random.uniform(0.1, 500), 2)
+                        unit = random.choice(UNITS)
+                        mn = round(random.uniform(0, value * 0.5), 2)
+                        mx = round(value * 1.5 + random.uniform(0, 50), 2)
+                        test_results.append((tr_id, v[0], param, value, unit, mn, mx))
+                        tr_id += 1
+
+            yield visits, diagnoses, services, prescriptions, rx_items, test_results
+            visit_id += n_chunk
+
     # ── Budowa dokumentów MongoDB ────────────────────────────────────────────
 
     @staticmethod
-    def _build_mongo_documents(data: GeneratedData) -> list[dict]:
+    def _build_lookup_dicts(data: "GeneratedData"):
+        """Buduje słowniki pomocnicze do budowy dokumentów MongoDB.
+        Zwraca tuple (visits_by_patient, services_by_visit, diags_by_visit,
+                       rx_by_visit, items_by_rx, tests_by_visit).
+        Słowniki trzymają referencje do istniejących krotek (brak duplikacji pamięci).
+        """
         visits_by_patient: dict[int, list] = {}
         for v in data.visits:
             visits_by_patient.setdefault(v[1], []).append(v)
@@ -518,7 +685,18 @@ class DataGenerator:
         for t in data.test_results:
             tests_by_visit.setdefault(t[1], []).append(t)
 
-        documents = []
+        return (visits_by_patient, services_by_visit, diags_by_visit,
+                rx_by_visit, items_by_rx, tests_by_visit)
+
+    @staticmethod
+    def _mongo_doc_generator(data: "GeneratedData"):
+        """Generator – zwraca dokumenty MongoDB jeden po drugim bez materializacji listy.
+        Idealny do streamingowego wstawiania przy dużych skalach (500k–10M),
+        ponieważ nigdy nie trzyma w pamięci jednocześnie wszystkich dokumentów.
+        """
+        (visits_by_patient, services_by_visit, diags_by_visit,
+         rx_by_visit, items_by_rx, tests_by_visit) = DataGenerator._build_lookup_dicts(data)
+
         for p in data.patients:
             doc = {
                 "_id": p[0],
@@ -576,8 +754,14 @@ class DataGenerator:
                     }
                     visit_doc["prescriptions"].append(rx_doc)
                 doc["visits"].append(visit_doc)
-            documents.append(doc)
-        return documents
+            yield doc
+
+    @staticmethod
+    def _build_mongo_documents(data: "GeneratedData") -> list[dict]:
+        """Buduje pełną listę dokumentów MongoDB (dla małych skal lub testów).
+        Dla dużych skal (≥500k) użyj _mongo_doc_generator() zamiast tej metody.
+        """
+        return list(DataGenerator._mongo_doc_generator(data))
 
     # ── Budowa danych Redis ──────────────────────────────────────────────────
 

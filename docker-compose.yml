@@ -12,6 +12,14 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    command: >
+      postgres
+        -c shared_buffers=4GB
+        -c work_mem=64MB
+        -c effective_cache_size=8GB
+        -c maintenance_work_mem=512MB
+        -c max_parallel_workers_per_gather=2
+        -c synchronous_commit=on
     restart: unless-stopped
 
   mysql:
@@ -24,7 +32,12 @@ services:
       - "3306:3306"
     volumes:
       - mydata:/var/lib/mysql
-    command: --default-authentication-plugin=caching_sha2_password --max_allowed_packet=256M --innodb_buffer_pool_size=512M
+    command: >-
+      --default-authentication-plugin=mysql_native_password
+      --max_allowed_packet=256M
+      --innodb_buffer_pool_size=4G
+      --innodb_log_file_size=512M
+      --innodb_flush_log_at_trx_commit=1
     restart: unless-stopped
 
   mongodb:
@@ -37,11 +50,13 @@ services:
       - "27017:27017"
     volumes:
       - mongodata:/data/db
+    command: mongod --wiredTigerCacheSizeGB 4
     restart: unless-stopped
 
   redis:
     image: redis:7
     container_name: ztdb_redis
+    command: redis-server --maxmemory 10gb --maxmemory-policy noeviction --save ""
     ports:
       - "6379:6379"
     volumes:

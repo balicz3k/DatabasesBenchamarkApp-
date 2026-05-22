@@ -1,0 +1,41 @@
+\begin{table}[H]
+\centering
+\caption{Czas operacji wstawiania danych [ms] -- bez indeksow. Najlepszy wynik w~wierszu pogrubiony.}
+\label{tab:create_no}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+\textbf{Scenariusz} & \textbf{Skala} & \textbf{PostgreSQL} & \textbf{MySQL} & \textbf{MongoDB} & \textbf{Redis} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wstawienie\\diagnozy}}
+ & 500k & 1.10 & 5.28 & 0.72 & \textbf{0.40} \\
+ & 1M & 1.04 & 5.07 & 0.74 & \textbf{0.39} \\
+ & 10M & 1.05 & 4.25 & 0.74 & \textbf{0.40} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wstawienie\\pacjenta}}
+ & 500k & 1.03 & 4.24 & 0.70 & \textbf{0.46} \\
+ & 1M & 1.12 & 4.21 & 0.69 & \textbf{0.45} \\
+ & 10M & 1.19 & 3.99 & 0.84 & \textbf{0.45} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wstawienie\\wykonanej usługi}}
+ & 500k & 1.06 & 5.82 & 0.74 & \textbf{0.46} \\
+ & 1M & 1.02 & 4.59 & 0.79 & \textbf{0.53} \\
+ & 10M & 1.06 & 6.81 & 0.85 & \textbf{0.47} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wstawienie recepty\\z pozycjami}}
+ & 500k & 2.16 & 8.31 & 0.72 & \textbf{0.44} \\
+ & 1M & 2.44 & 8.70 & 0.72 & \textbf{0.43} \\
+ & 10M & 2.28 & 10.97 & 0.75 & \textbf{0.47} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wstawienie\\wyniku badania}}
+ & 500k & 1.26 & 4.98 & 0.74 & \textbf{0.49} \\
+ & 1M & 1.03 & 4.46 & 0.71 & \textbf{0.43} \\
+ & 10M & 1.30 & 7.48 & 0.72 & \textbf{0.41} \\
+\midrule
+\multirow{3}{*}{\shortstack[l]{Wstawienie\\wizyty}}
+ & 500k & 1.16 & 4.37 & 0.77 & \textbf{0.54} \\
+ & 1M & 1.13 & 3.80 & 0.75 & \textbf{0.44} \\
+ & 10M & 1.25 & 4.45 & 0.93 & \textbf{0.48} \\
+\bottomrule
+\end{tabular}
+\end{table}
